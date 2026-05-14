@@ -43,15 +43,30 @@
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--text-muted);
 }
-.sNr-scale input[type="range"] { width: 120px; }
+.sNr-scale { gap: 3px; }
+.sNr-scale input[type="range"] { width: 60px; }
 .sNr-scale-pct {
-  width: 56px; text-align: right;
-  font-size: 12px; padding: 2px 6px;
+  width: 34px; text-align: right;
+  font-size: 11px; padding: 1px 3px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
+  border-radius: 3px;
   background: var(--background-modifier-form-field);
   color: var(--text-normal);
 }
+.sNr-scale-step {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.sNr-scale-step svg { width: 12px; height: 12px; }
+.sNr-scale-step:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.sNr-scale-step:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .sNr-rect-toolbar {
   position: fixed;
@@ -486,3 +501,185 @@
 .sNr-poly-draft circle { fill: #3b82f6; }
 .sNr-block.sNr-drafting { outline: 2px solid #3b82f6; }
 .sNr-block.sNr-drafting .sNr-canvas { cursor: crosshair; }
+/* Subtle highlight on whichever slide the header tools currently act on.
+ * Drafting outline takes precedence (sNr-drafting rule is more specific
+ * by order). */
+.sNr-block.sNr-focused {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* Target region overlay (cross-diagram quiz authoring) */
+.sNr-target-region {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 5;
+}
+.sNr-target-region.sNr-selected polygon {
+  fill-opacity: 0.18;
+  stroke-dasharray: none;
+  stroke-opacity: 1;
+  stroke-width: 2.5;
+}
+.sNr-vertex-target {
+  background: #22c55e;
+  border-color: #064e3b;
+}
+
+/* Cross-diagram quiz modals */
+.sNr-quiz-modal { max-width: 800px; }
+.sNr-quiz-scope-row {
+  display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap;
+}
+.sNr-quiz-scope-row button { padding: 8px 14px; }
+.sNr-quiz-scope-hint {
+  font-size: 0.85em; opacity: 0.7; margin-top: 12px;
+}
+.sNr-quiz-folder-list {
+  max-height: 360px; overflow-y: auto; margin-bottom: 8px;
+}
+.sNr-quiz-stage {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 12px; padding: 8px 0;
+}
+.sNr-quiz-question {
+  font-size: 1.15em; font-weight: 500; opacity: 0.85;
+}
+.sNr-quiz-crop {
+  position: relative;
+  overflow: hidden;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+.sNr-quiz-crop img {
+  position: absolute;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+}
+.sNr-quiz-controls {
+  display: flex; gap: 8px; justify-content: center;
+  margin-top: 14px;
+}
+.sNr-quiz-controls button {
+  padding: 8px 16px; display: inline-flex; align-items: center; gap: 4px;
+}
+.sNr-quiz-wrong { background: var(--background-modifier-error-hover); }
+.sNr-quiz-meta {
+  font-size: 0.8em; opacity: 0.55; text-align: center; margin-top: 8px;
+}
+.sNr-quiz-mode-row {
+  display: flex; justify-content: center; margin-top: 8px;
+}
+.sNr-quiz-mode-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px;
+  font-size: 0.85em;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.sNr-quiz-mode-toggle:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.sNr-quiz-answer { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sNr-quiz-answer-img {
+  position: relative; overflow: hidden;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+.sNr-quiz-answer-img img {
+  display: block; user-select: none; pointer-events: none;
+}
+.sNr-quiz-label-outline {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+.sNr-quiz-label-outline polygon {
+  fill: none;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px rgba(0,0,0,0.9)) drop-shadow(0 0 1px rgba(255,255,255,0.9));
+}
+.sNr-quiz-label-outline-rect {
+  position: absolute;
+  border: 3px solid;
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(255,255,255,0.7);
+}
+.sNr-quiz-concealer {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+}
+.sNr-quiz-concealer svg {
+  width: 100%; height: 100%; display: block;
+}
+.sNr-quiz-aliases {
+  font-size: 0.9em; opacity: 0.75; font-style: italic;
+}
+.sNr-quiz-done {
+  padding: 16px 0; text-align: center;
+}
+.sNr-quiz-done-note {
+  font-size: 0.85em; opacity: 0.6;
+}
+.sNr-target-region svg {
+  width: 100%; height: 100%;
+  display: block;
+  overflow: visible;
+}
+.sNr-target-region polygon {
+  fill: var(--sNr-color, #3b82f6);
+  fill-opacity: 0.08;
+  stroke: var(--sNr-color, #3b82f6);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  stroke-opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+svg.sNr-target-connector {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  filter:
+    drop-shadow(0 0 1px rgba(0, 0, 0, 0.9))
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.9));
+  z-index: 4;
+}
+svg.sNr-target-connector line {
+  stroke: var(--sNr-color, #3b82f6);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.9;
+}
+.sNr-target-region polygon {
+  /* Same halo treatment so the dashed outline doesn't disappear into the
+   * image. paint-order ensures the stroke is drawn after the fill. */
+  paint-order: stroke fill;
+}
+.sNr-target-region svg {
+  filter:
+    drop-shadow(0 0 1px rgba(0, 0, 0, 0.9))
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.9));
+}
+.sNr-poly-draft.sNr-target-draft polyline {
+  fill: rgba(34,197,94,0.15);
+  stroke: #22c55e;
+  stroke-dasharray: 5 4;
+}
+.sNr-poly-draft.sNr-target-draft circle { fill: #22c55e; }
+.sNr-tb-target-active {
+  background: rgba(34,197,94,0.25);
+  border-color: #22c55e;
+}
