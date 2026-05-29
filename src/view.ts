@@ -144,13 +144,51 @@ export class SlideAndRevealView extends ItemView {
     // Trackpad pinch / Ctrl+wheel zooms anywhere in the view. Bind on
     // containerEl so it works over the sidebar, header, content pane,
     // canvas, etc. — wherever the user happens to gesture.
+    //
+    // When the cursor is over the scroller, we zoom *toward the cursor*:
+    // the image-point under the mouse stays under the mouse after the
+    // zoom. Outside the scroller (header, sidebar, gaps), we just resize
+    // and let scroll position stay put — there's no meaningful "point" to
+    // pivot around.
     this.registerDomEvent(this.containerEl, 'wheel', (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
       // 0.3 chosen empirically: a normal-strength pinch nudges 1–3% per
       // event without making aggressive pinches overshoot.
       const cur = this.plugin.settings.imageScale;
-      this.setImageScale(cur - e.deltaY * 0.3, true);
+      const next = Math.max(5, Math.min(1000, Math.round(cur - e.deltaY * 0.3)));
+      if (next === cur) return;
+
+      const scroller = this.scrollerEl;
+      if (!scroller) {
+        this.setImageScale(next, true);
+        return;
+      }
+      const sr = scroller.getBoundingClientRect();
+      const cursorInScrollerX = e.clientX - sr.left;
+      const cursorInScrollerY = e.clientY - sr.top;
+      const insideFrame =
+        cursorInScrollerX >= 0 && cursorInScrollerY >= 0 &&
+        cursorInScrollerX <= sr.width && cursorInScrollerY <= sr.height;
+
+      if (!insideFrame) {
+        // Outside the frame: behave like the slider — no pivot.
+        this.setImageScale(next, true);
+        return;
+      }
+
+      // Snapshot the content-coord point under the cursor BEFORE the
+      // zoom changes layout, then re-pin it after the scale settles.
+      const contentXBefore = scroller.scrollLeft + cursorInScrollerX;
+      const contentYBefore = scroller.scrollTop + cursorInScrollerY;
+      const ratio = next / cur;
+      this.setImageScale(next, true);
+      // Layout reflows synchronously when --sNr-scale changes, but
+      // rAF makes sure scrollWidth/Height reflect the new size.
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = contentXBefore * ratio - cursorInScrollerX;
+        scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
+      });
     }, { passive: false });
 
     const refresh = (f: TAbstractFile) => {
@@ -244,7 +282,13 @@ export class SlideAndRevealView extends ItemView {
       // Arrow-key handling for ↑/↓ (only when not typing, no modifiers).
       if (!inField && !mod && !e.altKey && !e.shiftKey
           && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-        if (this.plugin.settings.arrowKeysReveal) {
+        // In study mode the point of arrows is to step the reveal rail
+        // — that should hold regardless of zoom level or the
+        // arrowKeysReveal setting (which only governs edit mode now,
+        // where arrows-as-scroll is sometimes preferred). In edit mode
+        // the user's preference controls.
+        const inStudyMode = this.plugin.settings.mode === 'study';
+        if (inStudyMode || this.plugin.settings.arrowKeysReveal) {
           // Reveal-mode: step the rail on the focused image.
           const ctx = this.currentImageContext();
           if (!ctx) return;
@@ -1543,13 +1587,11 @@ export class SlideAndRevealView extends ItemView {
       this.folderData.revealSteps[relKey] = clamped;
       this.scheduleSave();
     }
-    // Progress drives a subtle "fade as you advance" effect: remaining
-    // covers get a touch more transparent as more groups are revealed,
-    // and the rail itself fades a bit so it gets out of the way once
-    // you've made it most of the way through. Floors keep things
-    // legible and visible at any progress.
+    // The rail fades a bit as you advance so it gets out of the way once
+    // you've made it most of the way through. The covers themselves used
+    // to fade too, but a 55% opacity cover stops concealing — the label
+    // underneath bleeds through. So covers stay fully opaque now.
     const progress = groups.length > 0 ? clamped / groups.length : 0;
-    const coverAlpha = Math.max(0.55, 1 - progress * 0.45);
     const railAlpha = Math.max(0.4, 1 - progress * 0.5);
     for (let i = 0; i < groups.length; i++) {
       const reveal = i < clamped;
@@ -1557,9 +1599,9 @@ export class SlideAndRevealView extends ItemView {
         const el = canvas.querySelector(`.sNr-rect[data-id="${id}"]`) as HTMLElement | null;
         if (!el) continue;
         el.classList.toggle('sNr-revealed', reveal);
-        // Apply the progressive cover-fade only to still-hidden shapes.
-        // (Revealed ones use the existing .sNr-revealed opacity rule.)
-        el.style.setProperty('--sNr-cover-alpha', reveal ? '1' : String(coverAlpha));
+        // Hidden covers stay fully opaque; revealed ones use the
+        // .sNr-revealed opacity rule (≈0.08, near-invisible).
+        el.style.setProperty('--sNr-cover-alpha', '1');
         // Pair # overlay tracks the cover (see togglePair): visible when
         // the cover is up, hidden once the shape is revealed.
         const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${id}"]`);
@@ -1865,6 +1907,28 @@ export class SlideAndRevealView extends ItemView {
       for (const b of blocks) {
         b.classList.toggle('sNr-focused', b.dataset.path === focusedPath);
       }
+      // Sync the sidebar to the focused image so the active thumb tracks
+      // the main scroll. Big list drives the small list, not the reverse
+      // (PowerPoint-style). Anchor the thumb to the TOP of the sidebar
+      // viewport — 'nearest' sometimes left the bottom edge of the thumb
+      // clipped (its label was cut off), and a fixed top anchor gives a
+      // predictable position.
+      if (this.sidebarEl && focusedPath) {
+        this.sidebarEl.querySelectorAll('.sNr-thumb-active')
+          .forEach((t) => t.removeClass('sNr-thumb-active'));
+        const thumb = this.sidebarEl.querySelector(
+          `.sNr-thumb[data-path="${CSS.escape(focusedPath)}"]`,
+        ) as HTMLElement | null;
+        if (thumb) {
+          thumb.addClass('sNr-thumb-active');
+          // Compute scroll directly rather than using scrollIntoView so
+          // we only touch the sidebar's scroller — scrollIntoView with
+          // {block:'start'} can bubble up and shift ancestor scroll
+          // positions (including the main scroller we just left alone).
+          const thumbTop = thumb.offsetTop - this.sidebarEl.offsetTop;
+          this.sidebarEl.scrollTop = Math.max(0, thumbTop);
+        }
+      }
     }
 
     const drawBtn = this.iconBtn(tools, 'square', 'Rectangle');
@@ -1915,6 +1979,23 @@ export class SlideAndRevealView extends ItemView {
         this.render();
       };
     }
+
+    // Step-by-one buttons: advance/retreat the reveal rail one group at
+    // a time without touching the mouse-wheel / arrow keys.
+    const stepHideBtn = this.iconBtn(tools, 'chevron-up', 'Hide 1');
+    stepHideBtn.title = 'Hide the most-recently-revealed group (one step)';
+    if (!ctx) stepHideBtn.disabled = true;
+    stepHideBtn.onclick = () => {
+      if (!ctx) return;
+      this.bumpRevealStep(ctx.file, ctx.canvas, -1);
+    };
+    const stepRevealBtn = this.iconBtn(tools, 'chevron-down', 'Reveal 1');
+    stepRevealBtn.title = 'Reveal the next group (one step)';
+    if (!ctx) stepRevealBtn.disabled = true;
+    stepRevealBtn.onclick = () => {
+      if (!ctx) return;
+      this.bumpRevealStep(ctx.file, ctx.canvas, +1);
+    };
 
     const revealBtn = this.iconBtn(tools, 'eye', 'Reveal');
     revealBtn.title = 'Reveal all shapes on the focused image';
@@ -2192,17 +2273,20 @@ export class SlideAndRevealView extends ItemView {
       await this.saveFolderData();
     };
 
-    // 'Insert pair' button: compacts the distinct pair numbers above the
-    // entered value down to N+1, N+2, N+3 … so the sequence is tightly
-    // packed. Pairs ≤ N (including the current shape's, and any peers
-    // that share its pair) are untouched. Group-aware: shapes sharing
-    // the same old pair end up sharing the same new pair.
+    // 'Insert pair' button: shift every OTHER shape with pair ≥ the
+    // entered value up by 1, opening a slot at that value for THIS shape.
+    // The current shape is excluded — that's the whole point: you just
+    // typed the value you want, the button makes room around you.
     //
-    //   Example: pairs in image are {3, 6, 8, 12}, user enters 3
-    //   → result: {3, 4, 5, 6}
+    //   Example: pairs in image are {3, 5(self), 5, 6, 8}, user enters 5
+    //   → result: {3, 5(self), 6, 7, 9}     (self keeps 5; others bump)
+    //
+    // Note: this differs from "compact" — it CREATES a gap rather than
+    // closing one. Sequence below stays packed; sequence at-and-above
+    // (excluding the current shape) shifts up uniformly.
     const insertBtn = tb.createEl('button', { cls: 'sNr-tb-icon-btn' });
     setIcon(insertBtn, 'list-plus');
-    insertBtn.title = 'Renumber higher pairs: compact every distinct pair number greater than the entered value into N+1, N+2, … (this shape and any peers ≤ N keep their numbers).';
+    insertBtn.title = 'Shift every OTHER shape with pair ≥ the entered value up by 1 (the current shape keeps its number).';
     insertBtn.onclick = async (e) => {
       e.stopPropagation();
       const target = parseInt(pair.value, 10);
@@ -2211,37 +2295,24 @@ export class SlideAndRevealView extends ItemView {
         return;
       }
       const { list } = this.rectsFor(file);
-      // Distinct pair values strictly greater than the target, ascending.
-      const higher = Array.from(new Set(
-        list.filter((r) => r.pair > target).map((r) => r.pair)
-      )).sort((a, b) => a - b);
-      // Build oldPair → newPair: first higher group → target+1, etc.
-      const remap = new Map<number, number>();
-      higher.forEach((p, i) => remap.set(p, target + 1 + i));
-
-      // Skip if nothing actually changes (already tightly packed).
-      let willChange = false;
-      for (const [old, neu] of remap) if (old !== neu) { willChange = true; break; }
-      if (!willChange) {
-        new Notice('Pair numbers above ' + target + ' are already compact.');
+      // Shift every other shape whose pair ≥ target by +1. The current
+      // shape (rect.id) is held fixed so its newly-entered value sticks.
+      const affected = list.filter((r) => r.id !== rect.id && r.pair >= target);
+      if (affected.length === 0) {
+        new Notice('No other pair numbers at or above ' + target + ' to shift.');
         return;
       }
 
       this.snapshot();
-      let changed = 0;
-      for (const r of list) {
-        const newPair = remap.get(r.pair);
-        if (newPair !== undefined && newPair !== r.pair) {
-          r.pair = newPair;
-          changed++;
-          const otherEl = canvas.querySelector(`.sNr-rect[data-id="${r.id}"]`) as HTMLElement | null;
-          if (otherEl) otherEl.dataset.pair = String(r.pair);
-          const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${r.id}"]`) as HTMLElement | null;
-          if (ov) ov.setText('#' + r.pair);
-        }
+      for (const r of affected) {
+        r.pair = r.pair + 1;
+        const otherEl = canvas.querySelector(`.sNr-rect[data-id="${r.id}"]`) as HTMLElement | null;
+        if (otherEl) otherEl.dataset.pair = String(r.pair);
+        const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${r.id}"]`) as HTMLElement | null;
+        if (ov) ov.setText('#' + r.pair);
       }
       await this.saveFolderData();
-      new Notice(`Renumbered ${changed} shape${changed === 1 ? '' : 's'} above pair ${target}.`);
+      new Notice(`Shifted ${affected.length} shape${affected.length === 1 ? '' : 's'} ≥ pair ${target} up by 1.`);
       this.render();
     };
 

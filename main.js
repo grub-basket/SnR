@@ -694,7 +694,29 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (!e.ctrlKey) return;
       e.preventDefault();
       const cur = this.plugin.settings.imageScale;
-      this.setImageScale(cur - e.deltaY * 0.3, true);
+      const next = Math.max(5, Math.min(1e3, Math.round(cur - e.deltaY * 0.3)));
+      if (next === cur) return;
+      const scroller = this.scrollerEl;
+      if (!scroller) {
+        this.setImageScale(next, true);
+        return;
+      }
+      const sr = scroller.getBoundingClientRect();
+      const cursorInScrollerX = e.clientX - sr.left;
+      const cursorInScrollerY = e.clientY - sr.top;
+      const insideFrame = cursorInScrollerX >= 0 && cursorInScrollerY >= 0 && cursorInScrollerX <= sr.width && cursorInScrollerY <= sr.height;
+      if (!insideFrame) {
+        this.setImageScale(next, true);
+        return;
+      }
+      const contentXBefore = scroller.scrollLeft + cursorInScrollerX;
+      const contentYBefore = scroller.scrollTop + cursorInScrollerY;
+      const ratio = next / cur;
+      this.setImageScale(next, true);
+      requestAnimationFrame(() => {
+        scroller.scrollLeft = contentXBefore * ratio - cursorInScrollerX;
+        scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
+      });
     }, { passive: false });
     const refresh = (f) => {
       if (f instanceof import_obsidian4.TFile && IMG_RE.test(f.path)) this.render();
@@ -770,7 +792,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         return;
       }
       if (!inField && !mod && !e.altKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        if (this.plugin.settings.arrowKeysReveal) {
+        const inStudyMode = this.plugin.settings.mode === "study";
+        if (inStudyMode || this.plugin.settings.arrowKeysReveal) {
           const ctx = this.currentImageContext();
           if (!ctx) return;
           e.preventDefault();
@@ -1898,7 +1921,6 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.scheduleSave();
     }
     const progress = groups.length > 0 ? clamped / groups.length : 0;
-    const coverAlpha = Math.max(0.55, 1 - progress * 0.45);
     const railAlpha = Math.max(0.4, 1 - progress * 0.5);
     for (let i = 0; i < groups.length; i++) {
       const reveal = i < clamped;
@@ -1906,7 +1928,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         const el = canvas.querySelector(`.sNr-rect[data-id="${id}"]`);
         if (!el) continue;
         el.classList.toggle("sNr-revealed", reveal);
-        el.style.setProperty("--sNr-cover-alpha", reveal ? "1" : String(coverAlpha));
+        el.style.setProperty("--sNr-cover-alpha", "1");
         const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${id}"]`);
         if (ov) ov.classList.toggle("sNr-pair-overlay--visible", !reveal);
       }
@@ -2169,6 +2191,17 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       for (const b of blocks) {
         b.classList.toggle("sNr-focused", b.dataset.path === focusedPath);
       }
+      if (this.sidebarEl && focusedPath) {
+        this.sidebarEl.querySelectorAll(".sNr-thumb-active").forEach((t) => t.removeClass("sNr-thumb-active"));
+        const thumb = this.sidebarEl.querySelector(
+          `.sNr-thumb[data-path="${CSS.escape(focusedPath)}"]`
+        );
+        if (thumb) {
+          thumb.addClass("sNr-thumb-active");
+          const thumbTop = thumb.offsetTop - this.sidebarEl.offsetTop;
+          this.sidebarEl.scrollTop = Math.max(0, thumbTop);
+        }
+      }
     }
     const drawBtn = this.iconBtn(tools, "square", "Rectangle");
     drawBtn.title = "Add rectangle to the focused image (drag on it)";
@@ -2216,6 +2249,20 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         this.render();
       };
     }
+    const stepHideBtn = this.iconBtn(tools, "chevron-up", "Hide 1");
+    stepHideBtn.title = "Hide the most-recently-revealed group (one step)";
+    if (!ctx) stepHideBtn.disabled = true;
+    stepHideBtn.onclick = () => {
+      if (!ctx) return;
+      this.bumpRevealStep(ctx.file, ctx.canvas, -1);
+    };
+    const stepRevealBtn = this.iconBtn(tools, "chevron-down", "Reveal 1");
+    stepRevealBtn.title = "Reveal the next group (one step)";
+    if (!ctx) stepRevealBtn.disabled = true;
+    stepRevealBtn.onclick = () => {
+      if (!ctx) return;
+      this.bumpRevealStep(ctx.file, ctx.canvas, 1);
+    };
     const revealBtn = this.iconBtn(tools, "eye", "Reveal");
     revealBtn.title = "Reveal all shapes on the focused image";
     if (!ctx) revealBtn.disabled = true;
@@ -2455,7 +2502,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     };
     const insertBtn = tb.createEl("button", { cls: "sNr-tb-icon-btn" });
     (0, import_obsidian4.setIcon)(insertBtn, "list-plus");
-    insertBtn.title = "Renumber higher pairs: compact every distinct pair number greater than the entered value into N+1, N+2, \u2026 (this shape and any peers \u2264 N keep their numbers).";
+    insertBtn.title = "Shift every OTHER shape with pair \u2265 the entered value up by 1 (the current shape keeps its number).";
     insertBtn.onclick = async (e) => {
       e.stopPropagation();
       const target = parseInt(pair.value, 10);
@@ -2464,35 +2511,21 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         return;
       }
       const { list } = this.rectsFor(file);
-      const higher = Array.from(new Set(
-        list.filter((r) => r.pair > target).map((r) => r.pair)
-      )).sort((a, b) => a - b);
-      const remap = /* @__PURE__ */ new Map();
-      higher.forEach((p, i) => remap.set(p, target + 1 + i));
-      let willChange = false;
-      for (const [old, neu] of remap) if (old !== neu) {
-        willChange = true;
-        break;
-      }
-      if (!willChange) {
-        new import_obsidian4.Notice("Pair numbers above " + target + " are already compact.");
+      const affected = list.filter((r) => r.id !== rect.id && r.pair >= target);
+      if (affected.length === 0) {
+        new import_obsidian4.Notice("No other pair numbers at or above " + target + " to shift.");
         return;
       }
       this.snapshot();
-      let changed = 0;
-      for (const r of list) {
-        const newPair = remap.get(r.pair);
-        if (newPair !== void 0 && newPair !== r.pair) {
-          r.pair = newPair;
-          changed++;
-          const otherEl = canvas.querySelector(`.sNr-rect[data-id="${r.id}"]`);
-          if (otherEl) otherEl.dataset.pair = String(r.pair);
-          const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${r.id}"]`);
-          if (ov) ov.setText("#" + r.pair);
-        }
+      for (const r of affected) {
+        r.pair = r.pair + 1;
+        const otherEl = canvas.querySelector(`.sNr-rect[data-id="${r.id}"]`);
+        if (otherEl) otherEl.dataset.pair = String(r.pair);
+        const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${r.id}"]`);
+        if (ov) ov.setText("#" + r.pair);
       }
       await this.saveFolderData();
-      new import_obsidian4.Notice(`Renumbered ${changed} shape${changed === 1 ? "" : "s"} above pair ${target}.`);
+      new import_obsidian4.Notice(`Shifted ${affected.length} shape${affected.length === 1 ? "" : "s"} \u2265 pair ${target} up by 1.`);
       this.render();
     };
     tb.createDiv({ cls: "sNr-tb-divider" });
