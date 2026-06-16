@@ -9,10 +9,11 @@
  * Pool building lives in `quiz.ts`; this file is just glue and DOM.
  */
 
-import { App, Modal, Notice, Setting, TFile, setIcon } from 'obsidian';
+import { App, Modal, Notice, Setting, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
 import type { Rect } from './types';
 import { VIEW_TYPE } from './types';
+import { clampPoints } from './util';
 import {
   buildQuizPool,
   filterToImage,
@@ -23,15 +24,15 @@ import {
   type QuizScope,
 } from './quiz';
 import type { FolderData } from './types';
-import type { SlideAndRevealView } from './view';
+import { SlideAndRevealView } from './view';
 
-/** Try to find an active Slide & Reveal view so the modal can default
+/** Try to find an active Slide and Reveal view so the modal can default
  *  scopes like "this slide" / "this folder" to its current context. */
 export function activeSnRView(app: App): SlideAndRevealView | null {
+  const active = app.workspace.getActiveViewOfType(SlideAndRevealView);
+  if (active) return active;
+  // Fallback: any open S&R leaf, even if not currently focused.
   const leaves = app.workspace.getLeavesOfType(VIEW_TYPE);
-  // Prefer the currently active leaf if it's an S&R view; fall back to any.
-  const active = app.workspace.activeLeaf;
-  if (active && leaves.includes(active)) return active.view as SlideAndRevealView;
   return leaves[0] ? (leaves[0].view as SlideAndRevealView) : null;
 }
 
@@ -66,7 +67,7 @@ export class ScopePickerModal extends Modal {
     const slideBtn = btnRow.createEl('button', { text: 'This slide' });
     slideBtn.title = imagePath
       ? `Pool: labels on ${imagePath}`
-      : 'Open a Slide & Reveal view first.';
+      : 'Open a Slide and Reveal view first.';
     slideBtn.disabled = !imagePath || !folder;
     slideBtn.onclick = async () => {
       if (!imagePath || !folder) return;
@@ -82,7 +83,7 @@ export class ScopePickerModal extends Modal {
     const folderBtn = btnRow.createEl('button', { text: 'This folder' });
     folderBtn.title = folder
       ? `Pool: labels across all slides in ${folder}`
-      : 'Open a Slide & Reveal view first.';
+      : 'Open a Slide and Reveal view first.';
     folderBtn.disabled = !folder;
     folderBtn.onclick = async () => {
       if (!folder) return;
@@ -228,7 +229,7 @@ export class QuizModal extends Modal {
     const cropped = this.viewMode === 'cropped';
     const subject = this.revealed ? 'label' : 'target';
     setIcon(toggleBtn, cropped ? 'maximize-2' : 'minimize-2');
-    toggleBtn.appendChild(document.createTextNode(
+    toggleBtn.appendChild(activeDocument.createTextNode(
       cropped ? `  Show whole image (with ${subject} outlined)` : `  Show only the ${subject}`,
     ));
     toggleBtn.title = 'Toggle between zoomed-in crop and the full image';
@@ -245,11 +246,11 @@ export class QuizModal extends Modal {
       // Self-grade buttons (the v2 score log spec will read these, but for
       // now they just feed a session-only counter shown on Done).
       const wrong = controls.createEl('button', { cls: 'sNr-quiz-wrong' });
-      setIcon(wrong, 'x'); wrong.appendChild(document.createTextNode(' Missed it'));
+      setIcon(wrong, 'x'); wrong.appendChild(activeDocument.createTextNode(' Missed it'));
       wrong.onclick = () => { this.wrongCount++; this.advance(); };
 
       const right = controls.createEl('button', { cls: 'sNr-quiz-right mod-cta' });
-      setIcon(right, 'check'); right.appendChild(document.createTextNode(' Got it'));
+      setIcon(right, 'check'); right.appendChild(activeDocument.createTextNode(' Got it'));
       right.onclick = () => { this.rightCount++; this.advance(); };
     }
 
@@ -324,7 +325,6 @@ export class QuizModal extends Modal {
     if (!tFile) { parent.createDiv({ text: 'Image missing: ' + item.imagePath }); return; }
     const cropBox = parent.createDiv({ cls: 'sNr-quiz-crop' });
     const img = cropBox.createEl('img');
-    img.src = this.app.vault.getResourcePath(tFile);
     // Pad each side by 12% of the region's own dimension, clamped to the
     // image bounds. Padding scales with region size so small labels get a
     // generous halo and big regions barely change.
@@ -335,7 +335,13 @@ export class QuizModal extends Modal {
     const y = Math.max(0, region.y - padY);
     const w = Math.min(1 - x, region.w + 2 * padX);
     const h = Math.min(1 - y, region.h + 2 * padY);
-    img.onload = () => this.applyCrop(cropBox, img, x, y, w, h);
+    // Attach the load handler BEFORE setting src — cached images can
+    // resolve synchronously and skip an onload assigned afterward.
+    // `complete` is the post-hoc check for an already-cached image.
+    const applyOnReady = () => this.applyCrop(cropBox, img, x, y, w, h);
+    img.onload = applyOnReady;
+    img.src = this.app.vault.getResourcePath(tFile);
+    if (img.complete && img.naturalWidth > 0) applyOnReady();
   }
 
   /** Full image with a colored outline around the focal region. If
@@ -352,8 +358,7 @@ export class QuizModal extends Modal {
     if (!tFile) { parent.createDiv({ text: 'Image missing: ' + item.imagePath }); return; }
     const imgWrap = parent.createDiv({ cls: 'sNr-quiz-answer-img' });
     const img = imgWrap.createEl('img');
-    img.src = this.app.vault.getResourcePath(tFile);
-    img.onload = async () => {
+    const onReady = async () => {
       const natW = img.naturalWidth, natH = img.naturalHeight;
       const MAX_W = Math.min(720, window.innerWidth - 120);
       const MAX_H = Math.min(520, window.innerHeight - 280);
@@ -391,6 +396,9 @@ export class QuizModal extends Modal {
         box.style.borderColor = item.cover.color || this.plugin.settings.defaultColor;
       }
     };
+    img.onload = onReady;
+    img.src = this.app.vault.getResourcePath(tFile);
+    if (img.complete && img.naturalWidth > 0) onReady();
   }
 
   /** Opaque concealer overlay matching a cover's shape (rect or polygon).
@@ -404,11 +412,11 @@ export class QuizModal extends Modal {
     wrap.style.width = (cover.w * 100) + '%';
     wrap.style.height = (cover.h * 100) + '%';
     if (cover.kind === 'polygon' && cover.points) {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('viewBox', '0 0 100 100');
       svg.setAttribute('preserveAspectRatio', 'none');
-      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      poly.setAttribute('points', cover.points.map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
+      const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', clampPoints(cover.points).map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
       poly.style.fill = color;
       svg.appendChild(poly);
       wrap.appendChild(svg);
@@ -422,12 +430,12 @@ export class QuizModal extends Modal {
   private drawAnswerOverlay(host: HTMLElement, cover: Rect): void {
     const color = cover.color || this.plugin.settings.defaultColor;
     if (cover.kind === 'polygon' && cover.points) {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.classList.add('sNr-quiz-label-outline');
       svg.setAttribute('viewBox', '0 0 100 100');
       svg.setAttribute('preserveAspectRatio', 'none');
-      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      const pts = cover.points.map((p) => {
+      const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      const pts = clampPoints(cover.points).map((p) => {
         const xx = (cover.x + p.x * cover.w) * 100;
         const yy = (cover.y + p.y * cover.h) * 100;
         return `${xx},${yy}`;

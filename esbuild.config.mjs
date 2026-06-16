@@ -4,10 +4,10 @@ import { copyFileSync, mkdirSync, existsSync } from 'fs';
 const prod = process.argv.includes('--prod');
 const watch = process.argv.includes('--watch');
 
-const PLUGIN_DIR = process.env.PLUGIN_DIR;
+const PLUGIN_DIR = process.env.PLUGIN_DIR
+  || '/Users/human/Downloads/Claude Code/Claude Dev Vault/.obsidian/plugins/Slide & Reveal';
 
 function copyAssets() {
-  if (!PLUGIN_DIR) return;
   if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
   for (const f of ['main.js', 'manifest.json', 'styles.css']) {
     if (existsSync(f)) {

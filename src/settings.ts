@@ -12,10 +12,10 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl('h2', { text: 'Slide & Reveal' });
+    new Setting(containerEl).setName('Slide and Reveal').setHeading();
     const intro = containerEl.createEl('p');
     intro.appendText('Right-click any folder in the file explorer and choose ');
-    intro.createEl('em', { text: 'Open Slide & Reveal here' });
+    intro.createEl('em', { text: 'Open Slide and Reveal here' });
     intro.appendText('. Each folder gets its own ');
     intro.createEl('code', { text: '.slide-and-reveal.json' });
     intro.appendText(' file.');
@@ -63,7 +63,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
         .onChange(async (v) => {
           this.plugin.settings.railSide = v as 'left' | 'right';
           await this.plugin.saveSettings();
-          // Re-render any open Slide & Reveal views so the change shows
+          // Re-render any open Slide and Reveal views so the change shows
           // up immediately without needing to reopen them.
           this.app.workspace.getLeavesOfType('slide-and-reveal-view').forEach((l) => {
             const v2 = l.view as { render?: () => void };
@@ -71,7 +71,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           });
         }));
 
-    containerEl.createEl('h3', { text: 'Keyboard' });
+    new Setting(containerEl).setName('Keyboard').setHeading();
 
     new Setting(containerEl)
       .setName('Left/Right arrows zoom in/out')
@@ -136,7 +136,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    containerEl.createEl('h3', { text: 'Folders using Slide & Reveal' });
+    new Setting(containerEl).setName('Folders using Slide and Reveal').setHeading();
     const known = this.plugin.settings.knownFolders.slice().reverse();
     if (!known.length) {
       containerEl.createEl('p', { text: 'No folders yet.' });
@@ -148,7 +148,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           await this.plugin.forgetFolder(folder);
           this.display();
         }));
-        s.addButton((b) => b.setButtonText('Delete annotations file').setWarning().onClick(async () => {
+        s.addButton((b) => b.setButtonText('Delete annotations file').setDestructive().onClick(async () => {
           const path = joinPath(folder, ANNOT_FILE);
           try {
             if (await this.app.vault.adapter.exists(path)) {
@@ -166,18 +166,17 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
     }
 
     // ---- Discovered folders (folders with annotation files but not in the active list) ----
-    const discoveredHeader = containerEl.createEl('h3', { text: 'Discovered folders (not in active list)' });
-    discoveredHeader.title = 'Folders in your vault that contain a .slide-and-reveal.json (or legacy .image-annotator.json) file but aren\'t currently tracked.';
-    const note = containerEl.createEl('p', {
+    new Setting(containerEl)
+      .setName('Discovered folders (not in active list)')
+      .setDesc('Folders in your vault that contain a .slide-and-reveal.json (or legacy .image-annotator.json) file but aren\'t currently tracked.')
+      .setHeading();
+    containerEl.createEl('p', {
+      cls: 'sNr-settings-muted',
       text: 'Re-add a previously removed folder. Annotations are still in the .slide-and-reveal.json file in that folder.'
     });
-    note.style.fontSize = '0.85em';
-    note.style.color = 'var(--text-muted)';
 
     const discoveredEl = containerEl.createDiv();
-    const status = containerEl.createEl('p');
-    status.style.fontSize = '0.85em';
-    status.style.color = 'var(--text-muted)';
+    const status = containerEl.createEl('p', { cls: 'sNr-settings-muted' });
     status.setText('Scanning…');
 
     this.scanDiscovered().then((discovered) => {

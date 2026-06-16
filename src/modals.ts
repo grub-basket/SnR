@@ -7,7 +7,7 @@ export class FolderPickerModal extends FuzzySuggestModal<string> {
     super(app);
     this.folders = folders;
     this.onPick = onPick;
-    this.setPlaceholder('Pick a Slide & Reveal folder…');
+    this.setPlaceholder('Pick a Slide and Reveal folder…');
   }
   getItems(): string[] { return this.folders; }
   getItemText(item: string): string { return item; }
@@ -26,9 +26,8 @@ export class RenameModal extends Modal {
   onOpen(): void {
     this.titleEl.setText('Rename file');
     this.contentEl.createEl('p', { text: 'Enter a new file name (extension included):' });
-    this.inputEl = this.contentEl.createEl('input', { type: 'text' });
+    this.inputEl = this.contentEl.createEl('input', { type: 'text', cls: 'sNr-rename-input' });
     this.inputEl.value = this.current;
-    this.inputEl.style.width = '100%';
     this.inputEl.focus();
     const dot = this.current.lastIndexOf('.');
     if (dot > 0) this.inputEl.setSelectionRange(0, dot); else this.inputEl.select();
@@ -36,14 +35,10 @@ export class RenameModal extends Modal {
       if (e.key === 'Enter') { e.preventDefault(); this.submit(); }
       else if (e.key === 'Escape') { e.preventDefault(); this.close(); }
     });
-    const row = this.contentEl.createDiv();
-    row.style.marginTop = '10px';
-    row.style.textAlign = 'right';
-    row.style.gap = '6px';
+    const row = this.contentEl.createDiv({ cls: 'sNr-rename-row' });
     const cancel = row.createEl('button', { text: 'Cancel' });
     cancel.onclick = () => this.close();
-    const ok = row.createEl('button', { text: 'Rename' });
-    ok.style.marginLeft = '6px';
+    const ok = row.createEl('button', { text: 'Rename', cls: 'sNr-rename-ok' });
     ok.onclick = () => this.submit();
   }
   private submit(): void {

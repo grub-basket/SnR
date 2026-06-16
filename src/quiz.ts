@@ -9,8 +9,8 @@
  * from a chosen scope. The view layer (modal / ItemView) consumes them.
  */
 
-import type { App, TFile, TFolder } from 'obsidian';
-import { Notice } from 'obsidian';
+import type { App } from 'obsidian';
+import { Notice, TFile, TFolder } from 'obsidian';
 import { ANNOT_FILE, LEGACY_ANNOT_FILE, IMG_RE, type FolderData, type Rect, type TargetRegion } from './types';
 import { joinPath } from './util';
 
@@ -103,14 +103,13 @@ function shuffle<T>(arr: T[]): T[] {
 /** Resolve a vault folder path to a TFolder if it exists, else null. */
 export function getFolder(app: App, path: string): TFolder | null {
   const f = app.vault.getAbstractFileByPath(path);
-  // Avoid `instanceof TFolder` to keep the import surface minimal.
-  return f && 'children' in f ? (f as TFolder) : null;
+  return f instanceof TFolder ? f : null;
 }
 
 /** Resolve an image vault path to a TFile, else null. */
 export function getImage(app: App, path: string): TFile | null {
   const f = app.vault.getAbstractFileByPath(path);
-  return f && 'stat' in f ? (f as TFile) : null;
+  return f instanceof TFile ? f : null;
 }
 
 /** Convenience: warn the user if the pool is empty and explain why. */

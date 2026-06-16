@@ -1,7 +1,7 @@
 import { ItemView, Notice, Scope, TAbstractFile, TFile, TFolder, WorkspaceLeaf, ViewStateResult, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
 import { VIEW_TYPE, IMG_RE, ANNOT_FILE, LEGACY_ANNOT_FILE, FolderData, Rect, Point, TargetRegion } from './types';
-import { clamp01, joinPath, relTo, uid } from './util';
+import { clamp01, clampPoints, joinPath, relTo, uid } from './util';
 import { RenameModal } from './modals';
 import { ScopePickerModal } from './quiz-modals';
 
@@ -100,7 +100,7 @@ export class SlideAndRevealView extends ItemView {
   }
 
   getViewType(): string { return VIEW_TYPE; }
-  getDisplayText(): string { return this.folderPath ? `Slide & Reveal: ${this.folderPath}` : 'Slide & Reveal'; }
+  getDisplayText(): string { return this.folderPath ? `Slide and Reveal: ${this.folderPath}` : 'Slide and Reveal'; }
   getIcon(): string { return 'image'; }
 
   getState(): Record<string, unknown> {
@@ -185,7 +185,7 @@ export class SlideAndRevealView extends ItemView {
       this.setImageScale(next, true);
       // Layout reflows synchronously when --sNr-scale changes, but
       // rAF makes sure scrollWidth/Height reflect the new size.
-      requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
         scroller.scrollLeft = contentXBefore * ratio - cursorInScrollerX;
         scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
       });
@@ -214,7 +214,7 @@ export class SlideAndRevealView extends ItemView {
           // Preserve display position by renaming the entry in `order`.
           const idx = this.folderData.order.indexOf(oldKey);
           if (idx >= 0) this.folderData.order[idx] = newKey;
-          this.saveFolderData();
+          void this.saveFolderData();
         }
         this.render();
       }
@@ -246,26 +246,26 @@ export class SlideAndRevealView extends ItemView {
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
-          this.deleteSelectedTargetRegion();
+          void this.deleteSelectedTargetRegion();
           return;
         }
         if (this.selection) {
           e.preventDefault();
           e.stopPropagation();
-          this.deleteSelectedShape();
+          void this.deleteSelectedShape();
           return;
         }
       }
       if (mod && !e.altKey && key === 'z') {
         e.preventDefault();
         e.stopPropagation();
-        if (e.shiftKey) this.redo(); else this.undo();
+        if (e.shiftKey) void this.redo(); else void this.undo();
         return;
       }
       if (mod && !e.altKey && key === 'y') {
         e.preventDefault();
         e.stopPropagation();
-        this.redo();
+        void this.redo();
         return;
       }
       // Arrow-key zoom (only when not in a text field, no modifiers).
@@ -315,7 +315,7 @@ export class SlideAndRevealView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    this.timers.forEach((t) => clearTimeout(t));
+    this.timers.forEach((t) => window.clearTimeout(t));
     this.timers.clear();
     this.cancelPolyDraft();
     if (this.escScopePushed) {
@@ -366,8 +366,8 @@ export class SlideAndRevealView extends ItemView {
         }
       }
     } catch (e) {
-      console.error('Slide & Reveal: failed to load', path, e);
-      new Notice(`Slide & Reveal: couldn't read ${path}`);
+      console.error('Slide and Reveal: failed to load', path, e);
+      new Notice(`Slide and Reveal: couldn't read ${path}`);
     }
   }
 
@@ -377,8 +377,8 @@ export class SlideAndRevealView extends ItemView {
       await this.app.vault.adapter.write(this.annotFilePath(), JSON.stringify(this.folderData, null, 2));
       this.plugin.rememberFolder(this.folderPath);
     } catch (e) {
-      console.error('Slide & Reveal: failed to save', e);
-      new Notice('Slide & Reveal: save failed (see console)');
+      console.error('Slide and Reveal: failed to save', e);
+      new Notice('Slide and Reveal: save failed (see console)');
     }
   }
 
@@ -461,12 +461,12 @@ export class SlideAndRevealView extends ItemView {
     const savedScroll = this.scrollerEl
       ? this.scrollerEl.scrollTop
       : (this.folderData.scrollTop ?? 0);
-    // The selection toolbar lives on document.body (so it can't be
+    // The selection toolbar lives on activeDocument.body (so it can't be
     // clipped by canvas overflow). Clean up any stragglers before
     // rebuilding the view. Same for thumbnail tooltips. The selection
     // pointer goes stale on rebuild (DOM nodes destroyed) — clear it.
-    document.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
-    document.body.querySelectorAll('.sNr-tip').forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll('.sNr-tip').forEach((t) => t.remove());
     this.selection = null;
     root.empty();
     root.addClass('sNr-view');
@@ -481,7 +481,7 @@ export class SlideAndRevealView extends ItemView {
     header.createEl('h3', {
       text: this.folderPath
         ? `Folder: ${this.folderPath}`
-        : 'No folder — right-click a folder in the file explorer and choose "Open Slide & Reveal here".'
+        : 'No folder — right-click a folder in the file explorer and choose "Open Slide and Reveal here".'
     });
 
     if (!this.folderPath) return;
@@ -626,7 +626,7 @@ export class SlideAndRevealView extends ItemView {
       this.scheduleSave();
       if (!scrollRefreshScheduled) {
         scrollRefreshScheduled = true;
-        requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           scrollRefreshScheduled = false;
           this.refreshHeaderTools();
         });
@@ -683,7 +683,7 @@ export class SlideAndRevealView extends ItemView {
     // currentImageContext() returned null and they painted disabled.
     // Refresh now that the blocks are in the DOM. Defer to after the
     // scroll restore so currentBlockIndex sees the right viewport.
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       this.scrollerEl.scrollTop = savedScroll;
       this.refreshHeaderTools();
     });
@@ -691,7 +691,7 @@ export class SlideAndRevealView extends ItemView {
     // Keep keyboard focus on the root so undo/redo (and other shortcuts)
     // keep working after actions that destroy the previously-focused
     // element (e.g. clicking the trash button to delete a rect).
-    if (!root.contains(document.activeElement)) root.focus();
+    if (!root.contains(activeDocument.activeElement)) root.focus();
   }
 
   bindDivider(divider: HTMLElement, root: HTMLElement): void {
@@ -705,14 +705,14 @@ export class SlideAndRevealView extends ItemView {
         root.style.setProperty('--sNr-sidebar-w', newW + 'px');
       };
       const up = async () => {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
+        activeDocument.removeEventListener('mousemove', move);
+        activeDocument.removeEventListener('mouseup', up);
         divider.removeClass('sNr-dragging');
         this.plugin.settings.sidebarWidth = this.sidebarEl.offsetWidth;
         await this.plugin.saveSettings();
       };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      activeDocument.addEventListener('mousemove', move);
+      activeDocument.addEventListener('mouseup', up);
     });
   }
 
@@ -726,7 +726,7 @@ export class SlideAndRevealView extends ItemView {
     // which hijacks the drag event and prevents our thumb-level dragstart
     // from firing — that was the root cause of "reordering doesn't work".
     img.draggable = false;
-    img.style.pointerEvents = 'none';
+    img.addClass('sNr-thumb-img');
     const rel = relTo(this.folderPath, file.path);
     thumb.createDiv({ cls: 'sNr-thumb-label', text: rel });
 
@@ -736,7 +736,7 @@ export class SlideAndRevealView extends ItemView {
     let tipEl: HTMLElement | null = null;
     const showTip = () => {
       if (tipEl) return;
-      tipEl = document.body.createDiv({ cls: 'sNr-tip' });
+      tipEl = activeDocument.body.createDiv({ cls: 'sNr-tip' });
       tipEl.setText(rel);
       const r = thumb.getBoundingClientRect();
       // Place to the right; flip to the left if there isn't room.
@@ -981,8 +981,8 @@ export class SlideAndRevealView extends ItemView {
       ghost.style.height = (h * 100) + '%';
     };
     const up = async (ev: MouseEvent) => {
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
+      activeDocument.removeEventListener('mousemove', move);
+      activeDocument.removeEventListener('mouseup', up);
       ghost.remove();
       const cx = (ev.clientX - cb.left) / cb.width;
       const cy = (ev.clientY - cb.top) / cb.height;
@@ -1005,8 +1005,8 @@ export class SlideAndRevealView extends ItemView {
       // re-clicking the button. Click 'Rectangle' again to exit.
       this.render();
     };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
+    activeDocument.addEventListener('mousemove', move);
+    activeDocument.addEventListener('mouseup', up);
   }
 
   // ---------- Polygon drafting ----------
@@ -1018,11 +1018,11 @@ export class SlideAndRevealView extends ItemView {
 
     if (!this.polyDraft || this.polyDraft.canvas !== canvas) {
       this.cancelPolyDraft();
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.classList.add('sNr-poly-draft');
       svg.setAttribute('viewBox', '0 0 100 100');
       svg.setAttribute('preserveAspectRatio', 'none');
-      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polyline');
       svg.appendChild(poly);
       canvas.appendChild(svg);
       this.polyDraft = {
@@ -1042,7 +1042,7 @@ export class SlideAndRevealView extends ItemView {
     // dot at each vertex
     svg.querySelectorAll('circle').forEach((c) => c.remove());
     for (const p of points) {
-      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      const c = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'circle');
       c.setAttribute('cx', String(p.x * 100));
       c.setAttribute('cy', String(p.y * 100));
       c.setAttribute('r', '1.2');
@@ -1124,11 +1124,11 @@ export class SlideAndRevealView extends ItemView {
     this.polyDrawingPaths.delete(file.path);
     this.drawingPaths.delete(file.path);
 
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.classList.add('sNr-poly-draft', 'sNr-target-draft');
     svg.setAttribute('viewBox', '0 0 100 100');
     svg.setAttribute('preserveAspectRatio', 'none');
-    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polyline');
     svg.appendChild(poly);
     canvas.appendChild(svg);
     this.polyDraft = {
@@ -1156,7 +1156,7 @@ export class SlideAndRevealView extends ItemView {
     // Clean up any other selections / toolbars.
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     root.querySelectorAll('.sNr-target-region.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
-    document.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
     root.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
     el.classList.add('sNr-selected');
     this.selection = null; // not a shape selection
@@ -1164,7 +1164,7 @@ export class SlideAndRevealView extends ItemView {
 
     this.renderTargetRegionVertices(canvas, file, cover, el);
 
-    const tb = document.body.createDiv({ cls: 'sNr-rect-toolbar' });
+    const tb = activeDocument.body.createDiv({ cls: 'sNr-rect-toolbar' });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 200;
@@ -1179,7 +1179,7 @@ export class SlideAndRevealView extends ItemView {
       tb.style.top = top + 'px';
       tb.style.left = left + 'px';
     };
-    requestAnimationFrame(reposition);
+    window.requestAnimationFrame(reposition);
     this.scrollerEl.addEventListener('scroll', reposition);
     window.addEventListener('resize', reposition);
     const detachReposition = () => {
@@ -1202,7 +1202,7 @@ export class SlideAndRevealView extends ItemView {
     };
 
     if (this.currentOffClick) {
-      document.removeEventListener('mousedown', this.currentOffClick, true);
+      activeDocument.removeEventListener('mousedown', this.currentOffClick, true);
       this.currentOffClick = null;
     }
     const offClick = (ev: MouseEvent) => {
@@ -1215,11 +1215,11 @@ export class SlideAndRevealView extends ItemView {
       canvas.querySelectorAll('.sNr-vertex[data-target-cover-id]').forEach((v) => v.remove());
       detachReposition();
       this.targetSelection = null;
-      document.removeEventListener('mousedown', offClick, true);
+      activeDocument.removeEventListener('mousedown', offClick, true);
       if (this.currentOffClick === offClick) this.currentOffClick = null;
     };
     this.currentOffClick = offClick;
-    document.addEventListener('mousedown', offClick, true);
+    activeDocument.addEventListener('mousedown', offClick, true);
   }
 
   /** Delete the currently-selected target region (Del/Backspace path). */
@@ -1227,7 +1227,7 @@ export class SlideAndRevealView extends ItemView {
     const sel = this.targetSelection;
     if (!sel) return;
     this.targetSelection = null;
-    document.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
     await this.removeTargetRegion(sel.file, sel.cover.id);
   }
 
@@ -1237,9 +1237,12 @@ export class SlideAndRevealView extends ItemView {
     const tr = cover.targetRegion;
     if (!tr) return;
     canvas.querySelectorAll(`.sNr-vertex[data-target-cover-id="${cover.id}"]`).forEach((v) => v.remove());
-    for (let i = 0; i < tr.points.length; i++) {
+    // clampPoints backstops a malicious data file with thousands of vertices —
+    // we'd otherwise create one DOM node per point.
+    const visiblePts = clampPoints(tr.points);
+    for (let i = 0; i < visiblePts.length; i++) {
       const idx = i;
-      const p = tr.points[i];
+      const p = visiblePts[i];
       const v = canvas.createDiv({ cls: 'sNr-vertex sNr-vertex-target' });
       v.dataset.targetCoverId = cover.id;
       v.dataset.vertexIdx = String(idx);
@@ -1271,14 +1274,14 @@ export class SlideAndRevealView extends ItemView {
           }
         };
         const up = async () => {
-          document.removeEventListener('mousemove', move);
-          document.removeEventListener('mouseup', up);
+          activeDocument.removeEventListener('mousemove', move);
+          activeDocument.removeEventListener('mouseup', up);
           this.normalizeTargetRegion(tr);
           await this.saveFolderData();
           this.render();
         };
-        document.addEventListener('mousemove', move);
-        document.addEventListener('mouseup', up);
+        activeDocument.addEventListener('mousemove', move);
+        activeDocument.addEventListener('mouseup', up);
       });
 
       // Right-click vertex to delete (min 3).
@@ -1367,11 +1370,11 @@ export class SlideAndRevealView extends ItemView {
     wrap.style.height = (tr.h * 100) + '%';
     wrap.style.setProperty('--sNr-color', cover.color || this.plugin.settings.defaultColor);
 
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 100 100');
     svg.setAttribute('preserveAspectRatio', 'none');
-    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-    poly.setAttribute('points', tr.points.map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
+    const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', clampPoints(tr.points).map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
     svg.appendChild(poly);
     wrap.appendChild(svg);
 
@@ -1428,25 +1431,25 @@ export class SlideAndRevealView extends ItemView {
         });
       };
       const up = async () => {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
+        activeDocument.removeEventListener('mousemove', move);
+        activeDocument.removeEventListener('mouseup', up);
         if (snapped) await this.saveFolderData();
       };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      activeDocument.addEventListener('mousemove', move);
+      activeDocument.addEventListener('mouseup', up);
     });
 
     // Connector line between cover bbox centre and target bbox centre.
     // We render it as an SVG <line> spanning the entire canvas with
     // preserveAspectRatio="none", so the math is in pure 0..100 image
     // fractions regardless of the canvas's actual pixel aspect ratio.
-    const connectorSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const connectorSvg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
     connectorSvg.classList.add('sNr-target-connector');
     connectorSvg.dataset.coverId = cover.id;
     connectorSvg.setAttribute('viewBox', '0 0 100 100');
     connectorSvg.setAttribute('preserveAspectRatio', 'none');
     connectorSvg.style.setProperty('--sNr-color', cover.color || this.plugin.settings.defaultColor);
-    const lineEl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    const lineEl = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
     connectorSvg.appendChild(lineEl);
     canvas.appendChild(connectorSvg);
     this.updateTargetConnector(canvas, cover);
@@ -1470,11 +1473,11 @@ export class SlideAndRevealView extends ItemView {
 
     let dragTarget: HTMLElement | SVGElement = el;
     if (isPoly) {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('viewBox', '0 0 100 100');
       svg.setAttribute('preserveAspectRatio', 'none');
-      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      poly.setAttribute('points', rect.points!.map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
+      const poly = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', clampPoints(rect.points!).map((p) => `${p.x * 100},${p.y * 100}`).join(' '));
       svg.appendChild(poly);
       el.appendChild(svg);
       dragTarget = poly;
@@ -1517,12 +1520,12 @@ export class SlideAndRevealView extends ItemView {
         if (rect.targetRegion) this.updateTargetConnector(canvas, rect);
       };
       const up = async () => {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
+        activeDocument.removeEventListener('mousemove', move);
+        activeDocument.removeEventListener('mouseup', up);
         await this.saveFolderData();
       };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      activeDocument.addEventListener('mousemove', move);
+      activeDocument.addEventListener('mouseup', up);
     });
 
     // Resize handle (works for rect AND polygon — scales bbox; polygon points are local 0..1, so they auto-scale)
@@ -1546,12 +1549,12 @@ export class SlideAndRevealView extends ItemView {
         if (rect.targetRegion) this.updateTargetConnector(canvas, rect);
       };
       const up = async () => {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
+        activeDocument.removeEventListener('mousemove', move);
+        activeDocument.removeEventListener('mouseup', up);
         await this.saveFolderData();
       };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      activeDocument.addEventListener('mousemove', move);
+      activeDocument.addEventListener('mouseup', up);
     });
   }
 
@@ -1600,8 +1603,9 @@ export class SlideAndRevealView extends ItemView {
         if (!el) continue;
         el.classList.toggle('sNr-revealed', reveal);
         // Hidden covers stay fully opaque; revealed ones use the
-        // .sNr-revealed opacity rule (≈0.08, near-invisible).
-        el.style.setProperty('--sNr-cover-alpha', '1');
+        // .sNr-revealed opacity rule (≈0.08, near-invisible). The
+        // --sNr-cover-alpha custom property falls back to 1 in CSS so we
+        // no longer need to set it explicitly per cover.
         // Pair # overlay tracks the cover (see togglePair): visible when
         // the cover is up, hidden once the shape is revealed.
         const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${id}"]`);
@@ -1617,7 +1621,9 @@ export class SlideAndRevealView extends ItemView {
         thumb.style.top = total === 0 ? '50%' : (clamped / total * 100) + '%';
         // Only the thumb fades as it travels down — the rest of the rail
         // (line, dots, chevrons, label) stays at full opacity for clarity.
-        thumb.style.opacity = String(railAlpha);
+        // Drive opacity via a CSS variable so :hover can flip it back to
+        // 1 by setting the same variable — no need for `!important`.
+        thumb.style.setProperty('--sNr-rail-thumb-opacity', String(railAlpha));
       }
       const label = rail.querySelector('.sNr-rail-label') as HTMLElement | null;
       if (label) label.setText(`${clamped}/${total}`);
@@ -1686,11 +1692,11 @@ export class SlideAndRevealView extends ItemView {
         this.setRevealStep(file, canvas, groups, stepFromY(mv.clientY));
       };
       const up = () => {
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
+        activeDocument.removeEventListener('mousemove', move);
+        activeDocument.removeEventListener('mouseup', up);
       };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      activeDocument.addEventListener('mousemove', move);
+      activeDocument.addEventListener('mouseup', up);
     };
     thumb.addEventListener('mousedown', beginScrub);
     track.addEventListener('mousedown', (e) => {
@@ -1756,7 +1762,7 @@ export class SlideAndRevealView extends ItemView {
     this.togglePair(canvas, rect, true);
     const seconds = (rect.seconds && rect.seconds > 0) ? rect.seconds : this.plugin.settings.defaultSeconds;
     const existing = this.timers.get(rect.id);
-    if (existing) clearTimeout(existing);
+    if (existing) window.clearTimeout(existing);
     const t = window.setTimeout(() => {
       this.togglePair(canvas, rect, false);
       this.timers.delete(rect.id);
@@ -1770,7 +1776,7 @@ export class SlideAndRevealView extends ItemView {
   cancelFlash(canvas: HTMLElement, rect: Rect): void {
     const existing = this.timers.get(rect.id);
     if (existing) {
-      clearTimeout(existing);
+      window.clearTimeout(existing);
       this.timers.delete(rect.id);
     }
     this.togglePair(canvas, rect, false);
@@ -1828,9 +1834,12 @@ export class SlideAndRevealView extends ItemView {
   renderPolyVertices(canvas: HTMLElement, file: TFile, rect: Rect, el: HTMLElement): void {
     if (rect.kind !== 'polygon' || !rect.points) return;
     canvas.querySelectorAll(`.sNr-vertex[data-shape-id="${rect.id}"]`).forEach((v) => v.remove());
-    for (let i = 0; i < rect.points.length; i++) {
+    // clampPoints backstops a malicious data file with thousands of vertices —
+    // we'd otherwise create one DOM node per point.
+    const visiblePts = clampPoints(rect.points);
+    for (let i = 0; i < visiblePts.length; i++) {
       const idx = i;
-      const p = rect.points[i];
+      const p = visiblePts[i];
       const v = canvas.createDiv({ cls: 'sNr-vertex' });
       v.dataset.shapeId = rect.id;
       v.dataset.vertexIdx = String(idx);
@@ -1862,14 +1871,14 @@ export class SlideAndRevealView extends ItemView {
           }
         };
         const up = async () => {
-          document.removeEventListener('mousemove', move);
-          document.removeEventListener('mouseup', up);
+          activeDocument.removeEventListener('mousemove', move);
+          activeDocument.removeEventListener('mouseup', up);
           this.normalizePolygon(rect);
           await this.saveFolderData();
           this.render();
         };
-        document.addEventListener('mousemove', move);
-        document.addEventListener('mouseup', up);
+        activeDocument.addEventListener('mousemove', move);
+        activeDocument.addEventListener('mouseup', up);
       });
 
       // Right-click a vertex to delete it (if more than 3 remain)
@@ -2136,7 +2145,7 @@ export class SlideAndRevealView extends ItemView {
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     root.querySelectorAll('.sNr-target-region.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     // The toolbar is body-attached (position: fixed), so clean up there.
-    document.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
     root.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
     el.classList.add('sNr-selected');
     this.selection = { canvas, file, rect, el };
@@ -2144,7 +2153,7 @@ export class SlideAndRevealView extends ItemView {
 
     if (rect.kind === 'polygon') this.renderPolyVertices(canvas, file, rect, el);
 
-    const tb = document.body.createDiv({ cls: 'sNr-rect-toolbar' });
+    const tb = activeDocument.body.createDiv({ cls: 'sNr-rect-toolbar' });
     // Position is computed from el.getBoundingClientRect() and clamped to
     // the viewport, so toolbars near the right/bottom edge stay visible.
     const reposition = () => {
@@ -2164,7 +2173,7 @@ export class SlideAndRevealView extends ItemView {
       tb.style.left = left + 'px';
     };
     // Defer first reposition so offsetWidth/Height reflect actual content.
-    requestAnimationFrame(reposition);
+    window.requestAnimationFrame(reposition);
     this.scrollerEl.addEventListener('scroll', reposition);
     window.addEventListener('resize', reposition);
     const detachReposition = () => {
@@ -2385,7 +2394,7 @@ export class SlideAndRevealView extends ItemView {
     // captured `tb` / `el`) would otherwise fire here and remove the new
     // toolbar before its buttons' click handlers can run.
     if (this.currentOffClick) {
-      document.removeEventListener('mousedown', this.currentOffClick, true);
+      activeDocument.removeEventListener('mousedown', this.currentOffClick, true);
       this.currentOffClick = null;
     }
     const offClick = (ev: MouseEvent) => {
@@ -2400,11 +2409,11 @@ export class SlideAndRevealView extends ItemView {
       canvas.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
       detachReposition();
       this.selection = null;
-      document.removeEventListener('mousedown', offClick, true);
+      activeDocument.removeEventListener('mousedown', offClick, true);
       if (this.currentOffClick === offClick) this.currentOffClick = null;
     };
     this.currentOffClick = offClick;
-    document.addEventListener('mousedown', offClick, true);
+    activeDocument.addEventListener('mousedown', offClick, true);
   }
 
   // ---------- File rename ----------
