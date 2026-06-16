@@ -2635,7 +2635,6 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian5.Setting(containerEl).setName("Slide and Reveal").setHeading();
     const intro = containerEl.createEl("p");
     intro.appendText("Right-click any folder in the file explorer and choose ");
     intro.createEl("em", { text: "Open Slide and Reveal here" });
@@ -2698,7 +2697,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
       this.plugin.settings.pairColorMode = v;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian5.Setting(containerEl).setName("Folders using Slide and Reveal").setHeading();
+    new import_obsidian5.Setting(containerEl).setName("Tracked folders").setHeading();
     const known = this.plugin.settings.knownFolders.slice().reverse();
     if (!known.length) {
       containerEl.createEl("p", { text: "No folders yet." });

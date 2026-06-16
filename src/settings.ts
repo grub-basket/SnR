@@ -12,7 +12,9 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName('Slide and Reveal').setHeading();
+    // No top-level heading here: Obsidian shows the plugin name as the
+    // tab title above this content, so repeating it would be redundant
+    // (and the store linter flags it).
     const intro = containerEl.createEl('p');
     intro.appendText('Right-click any folder in the file explorer and choose ');
     intro.createEl('em', { text: 'Open Slide and Reveal here' });
@@ -136,7 +138,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl).setName('Folders using Slide and Reveal').setHeading();
+    new Setting(containerEl).setName('Tracked folders').setHeading();
     const known = this.plugin.settings.knownFolders.slice().reverse();
     if (!known.length) {
       containerEl.createEl('p', { text: 'No folders yet.' });
