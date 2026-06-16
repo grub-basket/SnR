@@ -76,7 +76,7 @@ var FolderPickerModal = class extends import_obsidian.FuzzySuggestModal {
     super(app);
     this.folders = folders;
     this.onPick = onPick;
-    this.setPlaceholder("Pick a Slide & Reveal folder\u2026");
+    this.setPlaceholder("Pick a Slide and Reveal folder\u2026");
   }
   getItems() {
     return this.folders;
@@ -97,9 +97,8 @@ var RenameModal = class extends import_obsidian.Modal {
   onOpen() {
     this.titleEl.setText("Rename file");
     this.contentEl.createEl("p", { text: "Enter a new file name (extension included):" });
-    this.inputEl = this.contentEl.createEl("input", { type: "text" });
+    this.inputEl = this.contentEl.createEl("input", { type: "text", cls: "sNr-rename-input" });
     this.inputEl.value = this.current;
-    this.inputEl.style.width = "100%";
     this.inputEl.focus();
     const dot = this.current.lastIndexOf(".");
     if (dot > 0) this.inputEl.setSelectionRange(0, dot);
@@ -113,14 +112,10 @@ var RenameModal = class extends import_obsidian.Modal {
         this.close();
       }
     });
-    const row = this.contentEl.createDiv();
-    row.style.marginTop = "10px";
-    row.style.textAlign = "right";
-    row.style.gap = "6px";
+    const row = this.contentEl.createDiv({ cls: "sNr-rename-row" });
     const cancel = row.createEl("button", { text: "Cancel" });
     cancel.onclick = () => this.close();
-    const ok = row.createEl("button", { text: "Rename" });
-    ok.style.marginLeft = "6px";
+    const ok = row.createEl("button", { text: "Rename", cls: "sNr-rename-ok" });
     ok.onclick = () => this.submit();
   }
   submit() {
@@ -186,7 +181,7 @@ function shuffle(arr) {
 }
 function getImage(app, path) {
   const f = app.vault.getAbstractFileByPath(path);
-  return f && "stat" in f ? f : null;
+  return f instanceof import_obsidian2.TFile ? f : null;
 }
 function warnIfEmpty(pool) {
   if (pool.length > 0) return false;
@@ -199,9 +194,9 @@ function warnIfEmpty(pool) {
 
 // src/quiz-modals.ts
 function activeSnRView(app) {
+  const active = app.workspace.getActiveViewOfType(SlideAndRevealView);
+  if (active) return active;
   const leaves = app.workspace.getLeavesOfType(VIEW_TYPE);
-  const active = app.workspace.activeLeaf;
-  if (active && leaves.includes(active)) return active.view;
   return leaves[0] ? leaves[0].view : null;
 }
 function currentImagePath(view) {
@@ -225,7 +220,7 @@ var ScopePickerModal = class extends import_obsidian3.Modal {
     const knownFolders = this.plugin.settings.knownFolders.slice();
     const btnRow = contentEl.createDiv({ cls: "sNr-quiz-scope-row" });
     const slideBtn = btnRow.createEl("button", { text: "This slide" });
-    slideBtn.title = imagePath ? `Pool: labels on ${imagePath}` : "Open a Slide & Reveal view first.";
+    slideBtn.title = imagePath ? `Pool: labels on ${imagePath}` : "Open a Slide and Reveal view first.";
     slideBtn.disabled = !imagePath || !folder;
     slideBtn.onclick = async () => {
       if (!imagePath || !folder) return;
@@ -238,7 +233,7 @@ var ScopePickerModal = class extends import_obsidian3.Modal {
       new QuizModal(this.plugin, pool, `this slide (${imagePath.split("/").pop()})`).open();
     };
     const folderBtn = btnRow.createEl("button", { text: "This folder" });
-    folderBtn.title = folder ? `Pool: labels across all slides in ${folder}` : "Open a Slide & Reveal view first.";
+    folderBtn.title = folder ? `Pool: labels across all slides in ${folder}` : "Open a Slide and Reveal view first.";
     folderBtn.disabled = !folder;
     folderBtn.onclick = async () => {
       if (!folder) return;
@@ -369,7 +364,7 @@ var QuizModal = class extends import_obsidian3.Modal {
     const cropped = this.viewMode === "cropped";
     const subject = this.revealed ? "label" : "target";
     (0, import_obsidian3.setIcon)(toggleBtn, cropped ? "maximize-2" : "minimize-2");
-    toggleBtn.appendChild(document.createTextNode(
+    toggleBtn.appendChild(activeDocument.createTextNode(
       cropped ? `  Show whole image (with ${subject} outlined)` : `  Show only the ${subject}`
     ));
     toggleBtn.title = "Toggle between zoomed-in crop and the full image";
@@ -387,14 +382,14 @@ var QuizModal = class extends import_obsidian3.Modal {
     } else {
       const wrong = controls.createEl("button", { cls: "sNr-quiz-wrong" });
       (0, import_obsidian3.setIcon)(wrong, "x");
-      wrong.appendChild(document.createTextNode(" Missed it"));
+      wrong.appendChild(activeDocument.createTextNode(" Missed it"));
       wrong.onclick = () => {
         this.wrongCount++;
         this.advance();
       };
       const right = controls.createEl("button", { cls: "sNr-quiz-right mod-cta" });
       (0, import_obsidian3.setIcon)(right, "check");
-      right.appendChild(document.createTextNode(" Got it"));
+      right.appendChild(activeDocument.createTextNode(" Got it"));
       right.onclick = () => {
         this.rightCount++;
         this.advance();
@@ -532,10 +527,10 @@ var QuizModal = class extends import_obsidian3.Modal {
     wrap.style.width = cover.w * 100 + "%";
     wrap.style.height = cover.h * 100 + "%";
     if (cover.kind === "polygon" && cover.points) {
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
-      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polygon");
       poly.setAttribute("points", clampPoints(cover.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
       poly.style.fill = color;
       svg.appendChild(poly);
@@ -549,11 +544,11 @@ var QuizModal = class extends import_obsidian3.Modal {
   drawAnswerOverlay(host, cover) {
     const color = cover.color || this.plugin.settings.defaultColor;
     if (cover.kind === "polygon" && cover.points) {
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.classList.add("sNr-quiz-label-outline");
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
-      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polygon");
       const pts = clampPoints(cover.points).map((p) => {
         const xx = (cover.x + p.x * cover.w) * 100;
         const yy = (cover.y + p.y * cover.h) * 100;
@@ -661,7 +656,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     return VIEW_TYPE;
   }
   getDisplayText() {
-    return this.folderPath ? `Slide & Reveal: ${this.folderPath}` : "Slide & Reveal";
+    return this.folderPath ? `Slide and Reveal: ${this.folderPath}` : "Slide and Reveal";
   }
   getIcon() {
     return "image";
@@ -721,7 +716,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const contentYBefore = scroller.scrollTop + cursorInScrollerY;
       const ratio = next / cur;
       this.setImageScale(next, true);
-      requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
         scroller.scrollLeft = contentXBefore * ratio - cursorInScrollerX;
         scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
       });
@@ -746,7 +741,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
           }
           const idx = this.folderData.order.indexOf(oldKey);
           if (idx >= 0) this.folderData.order[idx] = newKey;
-          this.saveFolderData();
+          void this.saveFolderData();
         }
         this.render();
       }
@@ -768,27 +763,27 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
-          this.deleteSelectedTargetRegion();
+          void this.deleteSelectedTargetRegion();
           return;
         }
         if (this.selection) {
           e.preventDefault();
           e.stopPropagation();
-          this.deleteSelectedShape();
+          void this.deleteSelectedShape();
           return;
         }
       }
       if (mod && !e.altKey && key === "z") {
         e.preventDefault();
         e.stopPropagation();
-        if (e.shiftKey) this.redo();
-        else this.undo();
+        if (e.shiftKey) void this.redo();
+        else void this.undo();
         return;
       }
       if (mod && !e.altKey && key === "y") {
         e.preventDefault();
         e.stopPropagation();
-        this.redo();
+        void this.redo();
         return;
       }
       if (!inField && !mod && !e.altKey && !e.shiftKey && this.plugin.settings.arrowKeysZoom && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
@@ -821,7 +816,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
   }
   async onClose() {
-    this.timers.forEach((t) => clearTimeout(t));
+    this.timers.forEach((t) => window.clearTimeout(t));
     this.timers.clear();
     this.cancelPolyDraft();
     if (this.escScopePushed) {
@@ -864,8 +859,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         }
       }
     } catch (e) {
-      console.error("Slide & Reveal: failed to load", path, e);
-      new import_obsidian4.Notice(`Slide & Reveal: couldn't read ${path}`);
+      console.error("Slide and Reveal: failed to load", path, e);
+      new import_obsidian4.Notice(`Slide and Reveal: couldn't read ${path}`);
     }
   }
   async saveFolderData() {
@@ -874,8 +869,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       await this.app.vault.adapter.write(this.annotFilePath(), JSON.stringify(this.folderData, null, 2));
       this.plugin.rememberFolder(this.folderPath);
     } catch (e) {
-      console.error("Slide & Reveal: failed to save", e);
-      new import_obsidian4.Notice("Slide & Reveal: save failed (see console)");
+      console.error("Slide and Reveal: failed to save", e);
+      new import_obsidian4.Notice("Slide and Reveal: save failed (see console)");
     }
   }
   scheduleSave() {
@@ -951,8 +946,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   render() {
     const root = this.containerEl.children[1];
     const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : this.folderData.scrollTop ?? 0;
-    document.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
-    document.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
     this.selection = null;
     root.empty();
     root.addClass("sNr-view");
@@ -962,7 +957,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     root.style.setProperty("--sNr-sidebar-w", settings.sidebarWidth + "px");
     const header = root.createDiv({ cls: "sNr-header" });
     header.createEl("h3", {
-      text: this.folderPath ? `Folder: ${this.folderPath}` : 'No folder \u2014 right-click a folder in the file explorer and choose "Open Slide & Reveal here".'
+      text: this.folderPath ? `Folder: ${this.folderPath}` : 'No folder \u2014 right-click a folder in the file explorer and choose "Open Slide and Reveal here".'
     });
     if (!this.folderPath) return;
     const row = header.createDiv({ cls: "sNr-header-row" });
@@ -1076,7 +1071,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.scheduleSave();
       if (!scrollRefreshScheduled) {
         scrollRefreshScheduled = true;
-        requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           scrollRefreshScheduled = false;
           this.refreshHeaderTools();
         });
@@ -1124,11 +1119,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     for (const img of images) this.renderThumb(img);
     for (const img of images) this.renderImage(img);
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       this.scrollerEl.scrollTop = savedScroll;
       this.refreshHeaderTools();
     });
-    if (!root.contains(document.activeElement)) root.focus();
+    if (!root.contains(activeDocument.activeElement)) root.focus();
   }
   bindDivider(divider, root) {
     divider.addEventListener("mousedown", (e) => {
@@ -1141,14 +1136,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         root.style.setProperty("--sNr-sidebar-w", newW + "px");
       };
       const up = async () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        activeDocument.removeEventListener("mousemove", move);
+        activeDocument.removeEventListener("mouseup", up);
         divider.removeClass("sNr-dragging");
         this.plugin.settings.sidebarWidth = this.sidebarEl.offsetWidth;
         await this.plugin.saveSettings();
       };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      activeDocument.addEventListener("mousemove", move);
+      activeDocument.addEventListener("mouseup", up);
     });
   }
   renderThumb(file) {
@@ -1158,13 +1153,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const img = thumb.createEl("img");
     img.src = this.app.vault.getResourcePath(file);
     img.draggable = false;
-    img.style.pointerEvents = "none";
+    img.addClass("sNr-thumb-img");
     const rel = relTo(this.folderPath, file.path);
     thumb.createDiv({ cls: "sNr-thumb-label", text: rel });
     let tipEl = null;
     const showTip = () => {
       if (tipEl) return;
-      tipEl = document.body.createDiv({ cls: "sNr-tip" });
+      tipEl = activeDocument.body.createDiv({ cls: "sNr-tip" });
       tipEl.setText(rel);
       const r = thumb.getBoundingClientRect();
       const tipW = tipEl.offsetWidth;
@@ -1368,8 +1363,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       ghost.style.height = h * 100 + "%";
     };
     const up = async (ev) => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
+      activeDocument.removeEventListener("mousemove", move);
+      activeDocument.removeEventListener("mouseup", up);
       ghost.remove();
       const cx = (ev.clientX - cb.left) / cb.width;
       const cy = (ev.clientY - cb.top) / cb.height;
@@ -1395,8 +1390,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       await this.saveFolderData();
       this.render();
     };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    activeDocument.addEventListener("mousemove", move);
+    activeDocument.addEventListener("mouseup", up);
   }
   // ---------- Polygon drafting ----------
   addPolyPoint(canvas, file, block, e) {
@@ -1406,11 +1401,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const y = clamp01((e.clientY - cb.top) / cb.height);
     if (!this.polyDraft || this.polyDraft.canvas !== canvas) {
       this.cancelPolyDraft();
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.classList.add("sNr-poly-draft");
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
-      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polyline");
       svg.appendChild(poly);
       canvas.appendChild(svg);
       this.polyDraft = {
@@ -1433,7 +1428,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     poly.setAttribute("points", points.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
     svg.querySelectorAll("circle").forEach((c) => c.remove());
     for (const p of points) {
-      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      const c = activeDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
       c.setAttribute("cx", String(p.x * 100));
       c.setAttribute("cy", String(p.y * 100));
       c.setAttribute("r", "1.2");
@@ -1509,11 +1504,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.cancelPolyDraft();
     this.polyDrawingPaths.delete(file.path);
     this.drawingPaths.delete(file.path);
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("sNr-poly-draft", "sNr-target-draft");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
-    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polyline");
     svg.appendChild(poly);
     canvas.appendChild(svg);
     this.polyDraft = {
@@ -1539,13 +1534,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
-    document.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     root.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
     el.classList.add("sNr-selected");
     this.selection = null;
     this.targetSelection = { canvas, file, cover, el };
     this.renderTargetRegionVertices(canvas, file, cover, el);
-    const tb = document.body.createDiv({ cls: "sNr-rect-toolbar" });
+    const tb = activeDocument.body.createDiv({ cls: "sNr-rect-toolbar" });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 200;
@@ -1560,7 +1555,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       tb.style.top = top + "px";
       tb.style.left = left + "px";
     };
-    requestAnimationFrame(reposition);
+    window.requestAnimationFrame(reposition);
     this.scrollerEl.addEventListener("scroll", reposition);
     window.addEventListener("resize", reposition);
     const detachReposition = () => {
@@ -1580,7 +1575,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       await this.removeTargetRegion(file, cover.id);
     };
     if (this.currentOffClick) {
-      document.removeEventListener("mousedown", this.currentOffClick, true);
+      activeDocument.removeEventListener("mousedown", this.currentOffClick, true);
       this.currentOffClick = null;
     }
     const offClick = (ev) => {
@@ -1593,18 +1588,18 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       canvas.querySelectorAll(".sNr-vertex[data-target-cover-id]").forEach((v) => v.remove());
       detachReposition();
       this.targetSelection = null;
-      document.removeEventListener("mousedown", offClick, true);
+      activeDocument.removeEventListener("mousedown", offClick, true);
       if (this.currentOffClick === offClick) this.currentOffClick = null;
     };
     this.currentOffClick = offClick;
-    document.addEventListener("mousedown", offClick, true);
+    activeDocument.addEventListener("mousedown", offClick, true);
   }
   /** Delete the currently-selected target region (Del/Backspace path). */
   async deleteSelectedTargetRegion() {
     const sel = this.targetSelection;
     if (!sel) return;
     this.targetSelection = null;
-    document.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     await this.removeTargetRegion(sel.file, sel.cover.id);
   }
   /** Draw draggable handles at each vertex of a target region. Mirrors
@@ -1647,14 +1642,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
           }
         };
         const up = async () => {
-          document.removeEventListener("mousemove", move);
-          document.removeEventListener("mouseup", up);
+          activeDocument.removeEventListener("mousemove", move);
+          activeDocument.removeEventListener("mouseup", up);
           this.normalizeTargetRegion(tr);
           await this.saveFolderData();
           this.render();
         };
-        document.addEventListener("mousemove", move);
-        document.addEventListener("mouseup", up);
+        activeDocument.addEventListener("mousemove", move);
+        activeDocument.addEventListener("mouseup", up);
       });
       v.addEventListener("contextmenu", async (e) => {
         e.preventDefault();
@@ -1743,10 +1738,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     wrap.style.width = tr.w * 100 + "%";
     wrap.style.height = tr.h * 100 + "%";
     wrap.style.setProperty("--sNr-color", cover.color || this.plugin.settings.defaultColor);
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
-    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polygon");
     poly.setAttribute("points", clampPoints(tr.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
     svg.appendChild(poly);
     wrap.appendChild(svg);
@@ -1791,20 +1786,20 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         });
       };
       const up = async () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        activeDocument.removeEventListener("mousemove", move);
+        activeDocument.removeEventListener("mouseup", up);
         if (snapped) await this.saveFolderData();
       };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      activeDocument.addEventListener("mousemove", move);
+      activeDocument.addEventListener("mouseup", up);
     });
-    const connectorSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const connectorSvg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
     connectorSvg.classList.add("sNr-target-connector");
     connectorSvg.dataset.coverId = cover.id;
     connectorSvg.setAttribute("viewBox", "0 0 100 100");
     connectorSvg.setAttribute("preserveAspectRatio", "none");
     connectorSvg.style.setProperty("--sNr-color", cover.color || this.plugin.settings.defaultColor);
-    const lineEl = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    const lineEl = activeDocument.createElementNS("http://www.w3.org/2000/svg", "line");
     connectorSvg.appendChild(lineEl);
     canvas.appendChild(connectorSvg);
     this.updateTargetConnector(canvas, cover);
@@ -1824,10 +1819,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.renderPairOverlay(canvas, rect);
     let dragTarget = el;
     if (isPoly) {
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
-      const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+      const poly = activeDocument.createElementNS("http://www.w3.org/2000/svg", "polygon");
       poly.setAttribute("points", clampPoints(rect.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
       svg.appendChild(poly);
       el.appendChild(svg);
@@ -1865,12 +1860,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         if (rect.targetRegion) this.updateTargetConnector(canvas, rect);
       };
       const up = async () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        activeDocument.removeEventListener("mousemove", move);
+        activeDocument.removeEventListener("mouseup", up);
         await this.saveFolderData();
       };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      activeDocument.addEventListener("mousemove", move);
+      activeDocument.addEventListener("mouseup", up);
     });
     handle.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -1890,12 +1885,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         if (rect.targetRegion) this.updateTargetConnector(canvas, rect);
       };
       const up = async () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        activeDocument.removeEventListener("mousemove", move);
+        activeDocument.removeEventListener("mouseup", up);
         await this.saveFolderData();
       };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      activeDocument.addEventListener("mousemove", move);
+      activeDocument.addEventListener("mouseup", up);
     });
   }
   /** Build ordered groups of shape ids for the reveal slider. Paired shapes are
@@ -1937,7 +1932,6 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         const el = canvas.querySelector(`.sNr-rect[data-id="${id}"]`);
         if (!el) continue;
         el.classList.toggle("sNr-revealed", reveal);
-        el.style.setProperty("--sNr-cover-alpha", "1");
         const ov = canvas.querySelector(`.sNr-pair-overlay[data-shape-id="${id}"]`);
         if (ov) ov.classList.toggle("sNr-pair-overlay--visible", !reveal);
       }
@@ -1949,7 +1943,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const thumb = rail.querySelector(".sNr-rail-thumb");
       if (thumb) {
         thumb.style.top = total === 0 ? "50%" : clamped / total * 100 + "%";
-        thumb.style.opacity = String(railAlpha);
+        thumb.style.setProperty("--sNr-rail-thumb-opacity", String(railAlpha));
       }
       const label = rail.querySelector(".sNr-rail-label");
       if (label) label.setText(`${clamped}/${total}`);
@@ -2011,11 +2005,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         this.setRevealStep(file, canvas, groups, stepFromY(mv.clientY));
       };
       const up = () => {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        activeDocument.removeEventListener("mousemove", move);
+        activeDocument.removeEventListener("mouseup", up);
       };
-      document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      activeDocument.addEventListener("mousemove", move);
+      activeDocument.addEventListener("mouseup", up);
     };
     thumb.addEventListener("mousedown", beginScrub);
     track.addEventListener("mousedown", (e) => {
@@ -2057,7 +2051,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.togglePair(canvas, rect, true);
     const seconds = rect.seconds && rect.seconds > 0 ? rect.seconds : this.plugin.settings.defaultSeconds;
     const existing = this.timers.get(rect.id);
-    if (existing) clearTimeout(existing);
+    if (existing) window.clearTimeout(existing);
     const t = window.setTimeout(() => {
       this.togglePair(canvas, rect, false);
       this.timers.delete(rect.id);
@@ -2070,7 +2064,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   cancelFlash(canvas, rect) {
     const existing = this.timers.get(rect.id);
     if (existing) {
-      clearTimeout(existing);
+      window.clearTimeout(existing);
       this.timers.delete(rect.id);
     }
     this.togglePair(canvas, rect, false);
@@ -2162,14 +2156,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
           }
         };
         const up = async () => {
-          document.removeEventListener("mousemove", move);
-          document.removeEventListener("mouseup", up);
+          activeDocument.removeEventListener("mousemove", move);
+          activeDocument.removeEventListener("mouseup", up);
           this.normalizePolygon(rect);
           await this.saveFolderData();
           this.render();
         };
-        document.addEventListener("mousemove", move);
-        document.addEventListener("mouseup", up);
+        activeDocument.addEventListener("mousemove", move);
+        activeDocument.addEventListener("mouseup", up);
       });
       v.addEventListener("contextmenu", async (e) => {
         e.preventDefault();
@@ -2396,13 +2390,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
-    document.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     root.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
     el.classList.add("sNr-selected");
     this.selection = { canvas, file, rect, el };
     this.targetSelection = null;
     if (rect.kind === "polygon") this.renderPolyVertices(canvas, file, rect, el);
-    const tb = document.body.createDiv({ cls: "sNr-rect-toolbar" });
+    const tb = activeDocument.body.createDiv({ cls: "sNr-rect-toolbar" });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 280;
@@ -2417,7 +2411,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       tb.style.top = top + "px";
       tb.style.left = left + "px";
     };
-    requestAnimationFrame(reposition);
+    window.requestAnimationFrame(reposition);
     this.scrollerEl.addEventListener("scroll", reposition);
     window.addEventListener("resize", reposition);
     const detachReposition = () => {
@@ -2595,7 +2589,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.deleteSelectedShape();
     };
     if (this.currentOffClick) {
-      document.removeEventListener("mousedown", this.currentOffClick, true);
+      activeDocument.removeEventListener("mousedown", this.currentOffClick, true);
       this.currentOffClick = null;
     }
     const offClick = (ev) => {
@@ -2608,11 +2602,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       canvas.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
       detachReposition();
       this.selection = null;
-      document.removeEventListener("mousedown", offClick, true);
+      activeDocument.removeEventListener("mousedown", offClick, true);
       if (this.currentOffClick === offClick) this.currentOffClick = null;
     };
     this.currentOffClick = offClick;
-    document.addEventListener("mousedown", offClick, true);
+    activeDocument.addEventListener("mousedown", offClick, true);
   }
   // ---------- File rename ----------
   renameFile(file) {
@@ -2641,10 +2635,10 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Slide & Reveal" });
+    new import_obsidian5.Setting(containerEl).setName("Slide and Reveal").setHeading();
     const intro = containerEl.createEl("p");
     intro.appendText("Right-click any folder in the file explorer and choose ");
-    intro.createEl("em", { text: "Open Slide & Reveal here" });
+    intro.createEl("em", { text: "Open Slide and Reveal here" });
     intro.appendText(". Each folder gets its own ");
     intro.createEl("code", { text: ".slide-and-reveal.json" });
     intro.appendText(" file.");
@@ -2673,7 +2667,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
         if (typeof v2.render === "function") v2.render();
       });
     }));
-    containerEl.createEl("h3", { text: "Keyboard" });
+    new import_obsidian5.Setting(containerEl).setName("Keyboard").setHeading();
     new import_obsidian5.Setting(containerEl).setName("Left/Right arrows zoom in/out").setDesc("When the view is focused, \u2190 shrinks and \u2192 grows by the step below.").addToggle((t) => t.setValue(this.plugin.settings.arrowKeysZoom).onChange(async (v) => {
       this.plugin.settings.arrowKeysZoom = v;
       await this.plugin.saveSettings();
@@ -2704,7 +2698,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
       this.plugin.settings.pairColorMode = v;
       await this.plugin.saveSettings();
     }));
-    containerEl.createEl("h3", { text: "Folders using Slide & Reveal" });
+    new import_obsidian5.Setting(containerEl).setName("Folders using Slide and Reveal").setHeading();
     const known = this.plugin.settings.knownFolders.slice().reverse();
     if (!known.length) {
       containerEl.createEl("p", { text: "No folders yet." });
@@ -2716,7 +2710,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
           await this.plugin.forgetFolder(folder);
           this.display();
         }));
-        s.addButton((b) => b.setButtonText("Delete annotations file").setWarning().onClick(async () => {
+        s.addButton((b) => b.setButtonText("Delete annotations file").setDestructive().onClick(async () => {
           const path = joinPath(folder, ANNOT_FILE);
           try {
             if (await this.app.vault.adapter.exists(path)) {
@@ -2732,17 +2726,13 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
         }));
       }
     }
-    const discoveredHeader = containerEl.createEl("h3", { text: "Discovered folders (not in active list)" });
-    discoveredHeader.title = "Folders in your vault that contain a .slide-and-reveal.json (or legacy .image-annotator.json) file but aren't currently tracked.";
-    const note = containerEl.createEl("p", {
+    new import_obsidian5.Setting(containerEl).setName("Discovered folders (not in active list)").setDesc("Folders in your vault that contain a .slide-and-reveal.json (or legacy .image-annotator.json) file but aren't currently tracked.").setHeading();
+    containerEl.createEl("p", {
+      cls: "sNr-settings-muted",
       text: "Re-add a previously removed folder. Annotations are still in the .slide-and-reveal.json file in that folder."
     });
-    note.style.fontSize = "0.85em";
-    note.style.color = "var(--text-muted)";
     const discoveredEl = containerEl.createDiv();
-    const status = containerEl.createEl("p");
-    status.style.fontSize = "0.85em";
-    status.style.color = "var(--text-muted)";
+    const status = containerEl.createEl("p", { cls: "sNr-settings-muted" });
     status.setText("Scanning\u2026");
     this.scanDiscovered().then((discovered) => {
       const knownSet = new Set(this.plugin.settings.knownFolders);
@@ -2806,40 +2796,42 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       if (!(file instanceof import_obsidian6.TFolder)) return;
       menu.addItem((item) => {
-        item.setTitle("Open Slide & Reveal here").setIcon("image").onClick(() => this.openForFolder(file.path));
+        item.setTitle("Open Slide and Reveal here").setIcon("image").onClick(() => this.openForFolder(file.path));
       });
     }));
-    this.addRibbonIcon("image", "Open Slide & Reveal", () => {
+    this.addRibbonIcon("image", "Open Slide and Reveal", () => {
       const last = this.settings.knownFolders[this.settings.knownFolders.length - 1];
-      if (last) this.openForFolder(last);
-      else new import_obsidian6.Notice('Right-click a folder in the file explorer and choose "Open Slide & Reveal here".');
+      if (last) void this.openForFolder(last);
+      else new import_obsidian6.Notice('Right-click a folder in the file explorer and choose "Open Slide and Reveal here".');
     });
     this.addCommand({
-      id: "open-slide-and-reveal",
+      id: "open-last-folder",
       name: "Open Last Folder",
       callback: () => {
         const last = this.settings.knownFolders[this.settings.knownFolders.length - 1];
-        if (last) this.openForFolder(last);
+        if (last) void this.openForFolder(last);
         else new import_obsidian6.Notice("No folder yet. Right-click a folder to open it here.");
       }
     });
     this.addCommand({
-      id: "pick-slide-and-reveal",
+      id: "pick-folder",
       name: "Pick Folder",
       callback: () => {
         const folders = this.settings.knownFolders.slice().reverse();
         if (!folders.length) {
-          new import_obsidian6.Notice('No folders yet. Right-click a folder and choose "Open Slide & Reveal here" first.');
+          new import_obsidian6.Notice('No folders yet. Right-click a folder and choose "Open Slide and Reveal here" first.');
           return;
         }
-        new FolderPickerModal(this.app, folders, (f) => this.openForFolder(f)).open();
+        new FolderPickerModal(this.app, folders, (f) => {
+          void this.openForFolder(f);
+        }).open();
       }
     });
-    this.addRibbonIcon("crosshair", "Slide & Reveal: cross-diagram quiz", () => {
+    this.addRibbonIcon("crosshair", "Slide and Reveal: cross-diagram quiz", () => {
       new ScopePickerModal(this).open();
     });
     this.addCommand({
-      id: "slide-and-reveal-quiz",
+      id: "cross-diagram-quiz",
       name: "Cross-diagram quiz",
       callback: () => new ScopePickerModal(this).open()
     });
@@ -2858,7 +2850,7 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
     const idx = list.indexOf(path);
     if (idx >= 0) list.splice(idx, 1);
     list.push(path);
-    this.saveSettings();
+    void this.saveSettings();
   }
   forgetFolder(path) {
     this.settings.knownFolders = this.settings.knownFolders.filter((p) => p !== path);
@@ -2868,11 +2860,11 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
     this.rememberFolder(folderPath);
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((l) => l.view.folderPath === folderPath);
     if (existing) {
-      this.app.workspace.revealLeaf(existing);
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { folderPath } });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 };

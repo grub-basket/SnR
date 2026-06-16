@@ -131,12 +131,13 @@
   animation: sNr-flash-pulse 1.1s ease-in-out infinite;
   box-shadow: 0 0 0 1px var(--interactive-accent);
 }
-.sNr-tb-flash-active:hover {
+/* Chained selector (.sNr-tb-icon-btn.sNr-tb-flash-active:hover) lifts the
+ * specificity above sibling rules that set the icon color, so we don't
+ * need !important to win the cascade. */
+.sNr-tb-icon-btn.sNr-tb-flash-active:hover {
   animation: none;
   background: var(--background-modifier-error);
-  /* Force a high-contrast white icon so it's visible against the red
-   * background regardless of theme. */
-  color: #ffffff !important;
+  color: #ffffff;
   box-shadow: 0 0 0 1px var(--background-modifier-error);
 }
 .sNr-tb-flash-active:hover .svg-icon { color: #ffffff; }
@@ -384,8 +385,11 @@
   cursor: grab;
   z-index: 2;
   transition: top 0.12s ease, opacity 0.2s ease;
+  /* Variable-driven opacity — JS sets --sNr-rail-thumb-opacity so :hover
+     can override by re-setting the same variable (no !important needed). */
+  opacity: var(--sNr-rail-thumb-opacity, 1);
 }
-.sNr-rail-thumb:hover { opacity: 1 !important; }
+.sNr-rail-thumb:hover { --sNr-rail-thumb-opacity: 1; }
 .sNr-rail-thumb:active { cursor: grabbing; transition: none; }
 .sNr-rail-track { cursor: pointer; }
 .sNr-rail-label {
@@ -683,3 +687,15 @@ svg.sNr-target-connector line {
   background: rgba(34,197,94,0.25);
   border-color: #22c55e;
 }
+
+/* RenameModal */
+.sNr-rename-input { width: 100%; }
+.sNr-rename-row { margin-top: 10px; text-align: right; gap: 6px; }
+.sNr-rename-row .sNr-rename-ok { margin-left: 6px; }
+
+/* Settings — discovered-folders status */
+.sNr-settings-muted { font-size: 0.85em; color: var(--text-muted); }
+
+/* Sidebar thumbnail img — pointer-events: none so native image-drag
+   doesn't pre-empt our wrapper-level dragstart on the .sNr-thumb. */
+.sNr-thumb-img { pointer-events: none; }

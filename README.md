@@ -1,4 +1,4 @@
-# Slide & Reveal
+# Slide and Reveal
 
 An Obsidian plugin for **flashcard-style study of labeled images** —
 diagrams, anatomy plates, screenshots with callouts, slide exports,
@@ -33,7 +33,7 @@ shuffles them, and asks you to identify each one out of context.
 
 1. Install (see [Install](#install)).
 2. Right-click any folder of images in Obsidian's file explorer → **Open
-   Slide & Reveal here**.
+   Slide and Reveal here**.
 3. Click the **Rectangle** or **Polygon** button in the header, then draw
    over a label on one of the images.
 4. Repeat for more labels. Use the **Pair #** input on a shape's
@@ -55,17 +55,17 @@ There is no Community Plugins store listing yet. Two install paths:
    - `manifest.json`
    - `main.js`
    - `styles.css`
-2. Put them inside a folder named `Slide & Reveal/` inside your vault's
+2. Put them inside a folder named `Slide and Reveal/` inside your vault's
    plugin directory:
    ```
-   <your vault>/.obsidian/plugins/Slide & Reveal/
+   <your vault>/.obsidian/plugins/Slide and Reveal/
      manifest.json
      main.js
      styles.css
    ```
 3. In Obsidian: **Settings → Community plugins** → turn off Restricted
    mode if it's on → click **Reload installed plugins** → toggle
-   **Slide & Reveal** on.
+   **Slide and Reveal** on.
 
 ### BRAT install (auto-update)
 
@@ -76,8 +76,8 @@ There is no Community Plugins store listing yet. Two install paths:
 3. BRAT will fetch the latest release and keep it updated.
 
 Either way, after enabling: right-click any folder in the file explorer
-and pick **Open Slide & Reveal here**, or use the command palette:
-*Slide & Reveal: Open Last Folder* / *Pick Folder*.
+and pick **Open Slide and Reveal here**, or use the command palette:
+*Slide and Reveal: Open Last Folder* / *Pick Folder*.
 
 ## Concepts
 
@@ -221,7 +221,7 @@ ignored by quiz mode but still work normally in study mode.
 ### Running a quiz
 
 1. Click the **crosshair** button in the header (right of the size
-   widget), or run *Slide & Reveal: Cross-diagram quiz* from the command
+   widget), or run *Slide and Reveal: Cross-diagram quiz* from the command
    palette. Or use the ribbon icon if you've enabled it.
 2. Pick a **scope**:
    - **This slide** — only covers on the currently-focused image.
@@ -256,7 +256,7 @@ typed-answer grading (not yet implemented).
 
 ## Keyboard reference
 
-All shortcuts work while the Slide & Reveal view is focused (clicking
+All shortcuts work while the Slide and Reveal view is focused (clicking
 on it gives it focus). Shortcuts are skipped when you're typing into a
 text/number input.
 
@@ -275,7 +275,7 @@ polygon.
 
 ## Settings
 
-Open via **Settings → Community plugins → Slide & Reveal → ⚙️**.
+Open via **Settings → Community plugins → Slide and Reveal → ⚙️**.
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -290,7 +290,7 @@ Open via **Settings → Community plugins → Slide & Reveal → ⚙️**.
 | **Mouse-wheel sensitivity** | 60 px / step | Bump up if a gaming mouse on Windows fires huge wheel deltas per click. |
 | **Mode** | `study` | `study` = wheel inside the image steps the reveal rail. `edit` = wheel is hands-off (you scroll, you draw, you don't fat-finger a cover open). |
 | **Wheel-step past 100%** | off | Past 100% zoom, wheel normally passes through to vertical scroll (so you can pan the wider image). Turn this on to keep wheel stepping the rail even when zoomed. |
-| **Folders using Slide & Reveal** | — | List of tracked folders with one-click *open*, *remove from list*, or *delete annotation file*. |
+| **Folders using Slide and Reveal** | — | List of tracked folders with one-click *open*, *remove from list*, or *delete annotation file*. |
 | **Discovered folders** | — | Vault scan turns up folders that already have an annotation file (e.g. synced in from another device) but aren't tracked here yet. One-click to add. |
 
 ## Data files and portability
@@ -305,7 +305,7 @@ Contents:
 - `scrollTop` — last content-pane scroll position.
 
 Plugin-wide settings live in Obsidian's standard plugin data dir
-(`<vault>/.obsidian/plugins/Slide & Reveal/data.json`).
+(`<vault>/.obsidian/plugins/Slide and Reveal/data.json`).
 
 **Portability:** because annotations live next to the images and use
 relative paths, you can move/share/sync the whole folder (Dropbox,
@@ -339,7 +339,7 @@ shipped `main.js` is plain plugin code only.
 ## Architecture overview
 
 ```
-Slide & Reveal/                 ← source repo
+Slide and Reveal/                 ← source repo
 ├── src/
 │   ├── main.ts                 plugin lifecycle, ribbon, commands, file-menu hook
 │   ├── view.ts                 the bulk of the UI (render, drawing, undo, rail, toolbars…)
