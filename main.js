@@ -57,6 +57,10 @@ function uid() {
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
+var MAX_POLY_POINTS = 1e3;
+function clampPoints(pts) {
+  return pts.length > MAX_POLY_POINTS ? pts.slice(0, MAX_POLY_POINTS) : pts;
+}
 function joinPath(folder, name) {
   return folder ? `${folder}/${name}` : name;
 }
@@ -461,7 +465,6 @@ var QuizModal = class extends import_obsidian3.Modal {
     }
     const cropBox = parent.createDiv({ cls: "sNr-quiz-crop" });
     const img = cropBox.createEl("img");
-    img.src = this.app.vault.getResourcePath(tFile);
     const PAD = 0.12;
     const padX = region.w * PAD;
     const padY = region.h * PAD;
@@ -469,7 +472,10 @@ var QuizModal = class extends import_obsidian3.Modal {
     const y = Math.max(0, region.y - padY);
     const w = Math.min(1 - x, region.w + 2 * padX);
     const h = Math.min(1 - y, region.h + 2 * padY);
-    img.onload = () => this.applyCrop(cropBox, img, x, y, w, h);
+    const applyOnReady = () => this.applyCrop(cropBox, img, x, y, w, h);
+    img.onload = applyOnReady;
+    img.src = this.app.vault.getResourcePath(tFile);
+    if (img.complete && img.naturalWidth > 0) applyOnReady();
   }
   /** Full image with a colored outline around the focal region. If
    *  `outlineCover` is true we render the cover polygon outline (matches
@@ -483,8 +489,7 @@ var QuizModal = class extends import_obsidian3.Modal {
     }
     const imgWrap = parent.createDiv({ cls: "sNr-quiz-answer-img" });
     const img = imgWrap.createEl("img");
-    img.src = this.app.vault.getResourcePath(tFile);
-    img.onload = async () => {
+    const onReady = async () => {
       const natW = img.naturalWidth, natH = img.naturalHeight;
       const MAX_W = Math.min(720, window.innerWidth - 120);
       const MAX_H = Math.min(520, window.innerHeight - 280);
@@ -512,6 +517,9 @@ var QuizModal = class extends import_obsidian3.Modal {
         box.style.borderColor = item.cover.color || this.plugin.settings.defaultColor;
       }
     };
+    img.onload = onReady;
+    img.src = this.app.vault.getResourcePath(tFile);
+    if (img.complete && img.naturalWidth > 0) onReady();
   }
   /** Opaque concealer overlay matching a cover's shape (rect or polygon).
    *  Used in full-image quiz previews so labels under unrelated covers
@@ -528,7 +536,7 @@ var QuizModal = class extends import_obsidian3.Modal {
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
       const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-      poly.setAttribute("points", cover.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
+      poly.setAttribute("points", clampPoints(cover.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
       poly.style.fill = color;
       svg.appendChild(poly);
       wrap.appendChild(svg);
@@ -546,7 +554,7 @@ var QuizModal = class extends import_obsidian3.Modal {
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
       const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-      const pts = cover.points.map((p) => {
+      const pts = clampPoints(cover.points).map((p) => {
         const xx = (cover.x + p.x * cover.w) * 100;
         const yy = (cover.y + p.y * cover.h) * 100;
         return `${xx},${yy}`;
@@ -1605,9 +1613,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const tr = cover.targetRegion;
     if (!tr) return;
     canvas.querySelectorAll(`.sNr-vertex[data-target-cover-id="${cover.id}"]`).forEach((v) => v.remove());
-    for (let i = 0; i < tr.points.length; i++) {
+    const visiblePts = clampPoints(tr.points);
+    for (let i = 0; i < visiblePts.length; i++) {
       const idx = i;
-      const p = tr.points[i];
+      const p = visiblePts[i];
       const v = canvas.createDiv({ cls: "sNr-vertex sNr-vertex-target" });
       v.dataset.targetCoverId = cover.id;
       v.dataset.vertexIdx = String(idx);
@@ -1738,7 +1747,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
     const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-    poly.setAttribute("points", tr.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
+    poly.setAttribute("points", clampPoints(tr.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
     svg.appendChild(poly);
     wrap.appendChild(svg);
     const resolveFile = () => {
@@ -1819,7 +1828,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       svg.setAttribute("viewBox", "0 0 100 100");
       svg.setAttribute("preserveAspectRatio", "none");
       const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-      poly.setAttribute("points", rect.points.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
+      poly.setAttribute("points", clampPoints(rect.points).map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
       svg.appendChild(poly);
       el.appendChild(svg);
       dragTarget = poly;
@@ -2119,9 +2128,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   renderPolyVertices(canvas, file, rect, el) {
     if (rect.kind !== "polygon" || !rect.points) return;
     canvas.querySelectorAll(`.sNr-vertex[data-shape-id="${rect.id}"]`).forEach((v) => v.remove());
-    for (let i = 0; i < rect.points.length; i++) {
+    const visiblePts = clampPoints(rect.points);
+    for (let i = 0; i < visiblePts.length; i++) {
       const idx = i;
-      const p = rect.points[i];
+      const p = visiblePts[i];
       const v = canvas.createDiv({ cls: "sNr-vertex" });
       v.dataset.shapeId = rect.id;
       v.dataset.vertexIdx = String(idx);
