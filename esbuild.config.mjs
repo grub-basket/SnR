@@ -1,11 +1,12 @@
 import esbuild from 'esbuild';
 import { copyFileSync, mkdirSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 const prod = process.argv.includes('--prod');
 const watch = process.argv.includes('--watch');
 
 const PLUGIN_DIR = process.env.PLUGIN_DIR
-  || '/Users/human/Downloads/Claude Code/Claude Dev Vault/.obsidian/plugins/Slide & Reveal';
+  || fileURLToPath(new URL('../Claude Dev Vault/.obsidian/plugins/Slide & Reveal', import.meta.url));
 
 function copyAssets() {
   if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
