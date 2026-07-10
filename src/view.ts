@@ -49,6 +49,17 @@ export class SlideAndRevealView extends ItemView {
   // Polygon draft state
   private polyDraft: PolyDraft | null = null;
 
+  /** Rectangle draft state for click-move-click drawing. Held between the
+   *  first-corner click and the second-corner (commit) click. */
+  private rectDraft: {
+    file: TFile;
+    canvas: HTMLElement;
+    sx: number;
+    sy: number;
+    ghost: HTMLElement;
+    onMove: (e: MouseEvent) => void;
+  } | null = null;
+
   // Undo / redo. Two op types: a folderData snapshot, or a vault file
   // rename (so undoing the rename actually moves the file back).
   private undoStack: UndoOp[] = [];
@@ -945,10 +956,9 @@ export class SlideAndRevealView extends ItemView {
     this.renderRail(railHost, file, canvas);
 
     canvas.addEventListener('mousedown', (e: MouseEvent) => {
-      if (this.drawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
-        this.beginRectDrag(canvas, file, e);
-        return;
-      }
+      // Rectangle drawing is click-move-click (not click-and-drag), handled
+      // in the 'click' listener below. Skip mousedown for that mode so we
+      // don't fight the click semantics or eat text selection.
       if (this.polyDrawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
         this.addPolyPoint(canvas, file, block, e);
         return;
@@ -966,6 +976,24 @@ export class SlideAndRevealView extends ItemView {
       }
     });
 
+    // Rectangle drawing: click-move-click (not click-and-drag). First click
+    // places a corner, mouse-move stretches a semi-transparent preview,
+    // second click commits.
+    canvas.addEventListener('click', (e: MouseEvent) => {
+      if (!this.drawingPaths.has(file.path)) return;
+      if (e.target !== canvas && e.target !== imgEl) return;
+      // Ignore clicks that are actually the tail end of a dblclick (which
+      // has its own polygon-commit meaning elsewhere).
+      if (e.detail !== 1 && e.detail !== 0) return;
+      if (!this.rectDraft || this.rectDraft.canvas !== canvas) {
+        // Cancel any stale draft on a different canvas before starting.
+        this.cancelRectDraft();
+        this.beginRectDraft(canvas, file, e);
+      } else {
+        void this.commitRectDraft(e);
+      }
+    });
+
     // Double-click on canvas (not on rect) commits poly
     canvas.addEventListener('dblclick', (e: MouseEvent) => {
       if (this.polyDrawingPaths.has(file.path) || (this.targetDraftCoverId && this.polyDraft?.file === file)) {
@@ -975,54 +1003,79 @@ export class SlideAndRevealView extends ItemView {
     });
   }
 
-  // ---------- Rectangle drawing ----------
-  private beginRectDrag(canvas: HTMLElement, file: TFile, e: MouseEvent): void {
-    e.preventDefault();
+  // ---------- Rectangle drawing (click-move-click) ----------
+  /** First click: place the anchor corner and start a semi-transparent
+   *  preview that follows the cursor. */
+  private beginRectDraft(canvas: HTMLElement, file: TFile, e: MouseEvent): void {
     const cb = canvas.getBoundingClientRect();
-    const sx = (e.clientX - cb.left) / cb.width;
-    const sy = (e.clientY - cb.top) / cb.height;
-    const ghost = canvas.createDiv({ cls: 'sNr-rect' });
+    const sx = clamp01((e.clientX - cb.left) / cb.width);
+    const sy = clamp01((e.clientY - cb.top) / cb.height);
+    const ghost = canvas.createDiv({ cls: 'sNr-rect sNr-rect-ghost' });
     ghost.style.setProperty('--sNr-color', this.plugin.settings.defaultColor);
+    ghost.style.left = (sx * 100) + '%';
+    ghost.style.top = (sy * 100) + '%';
+    ghost.style.width = '0%';
+    ghost.style.height = '0%';
 
-    const move = (ev: MouseEvent) => {
-      const cx = (ev.clientX - cb.left) / cb.width;
-      const cy = (ev.clientY - cb.top) / cb.height;
-      const x = clamp01(Math.min(sx, cx));
-      const y = clamp01(Math.min(sy, cy));
-      const w = clamp01(Math.abs(cx - sx));
-      const h = clamp01(Math.abs(cy - sy));
+    const onMove = (ev: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const cx = clamp01((ev.clientX - rect.left) / rect.width);
+      const cy = clamp01((ev.clientY - rect.top) / rect.height);
+      const x = Math.min(sx, cx);
+      const y = Math.min(sy, cy);
+      const w = Math.abs(cx - sx);
+      const h = Math.abs(cy - sy);
       ghost.style.left = (x * 100) + '%';
       ghost.style.top = (y * 100) + '%';
       ghost.style.width = (w * 100) + '%';
       ghost.style.height = (h * 100) + '%';
     };
-    const up = async (ev: MouseEvent) => {
-      activeDocument.removeEventListener('mousemove', move);
-      activeDocument.removeEventListener('mouseup', up);
-      ghost.remove();
-      const cx = (ev.clientX - cb.left) / cb.width;
-      const cy = (ev.clientY - cb.top) / cb.height;
-      const x = clamp01(Math.min(sx, cx));
-      const y = clamp01(Math.min(sy, cy));
-      const w = clamp01(Math.abs(cx - sx));
-      const h = clamp01(Math.abs(cy - sy));
-      if (w < 0.01 || h < 0.01) return;
-      this.snapshot();
-      const rect: Rect = {
-        id: uid(), kind: 'rect', x, y, w, h,
-        pair: this.nextPairFor(file),
-        seconds: this.plugin.settings.defaultSeconds,
-        color: this.plugin.settings.defaultColor
-      };
-      const { list } = this.rectsFor(file);
-      list.push(rect);
-      await this.saveFolderData();
-      // Stay in rectangle-draw mode so the user can keep adding without
-      // re-clicking the button. Click 'Rectangle' again to exit.
-      this.render();
+    canvas.addEventListener('mousemove', onMove);
+    this.rectDraft = { file, canvas, sx, sy, ghost, onMove };
+  }
+
+  /** Second click: turn the ghost into a real cover. */
+  private async commitRectDraft(e: MouseEvent): Promise<void> {
+    const draft = this.rectDraft;
+    if (!draft) return;
+    const { canvas, file, sx, sy, ghost, onMove } = draft;
+    const cb = canvas.getBoundingClientRect();
+    const cx = clamp01((e.clientX - cb.left) / cb.width);
+    const cy = clamp01((e.clientY - cb.top) / cb.height);
+    const x = Math.min(sx, cx);
+    const y = Math.min(sy, cy);
+    const w = Math.abs(cx - sx);
+    const h = Math.abs(cy - sy);
+    canvas.removeEventListener('mousemove', onMove);
+    ghost.remove();
+    this.rectDraft = null;
+    if (w < 0.01 || h < 0.01) {
+      // Second click landed on top of the first — treat as a cancel rather
+      // than committing a degenerate 0-size cover.
+      return;
+    }
+    this.snapshot();
+    const rect: Rect = {
+      id: uid(), kind: 'rect', x, y, w, h,
+      pair: this.nextPairFor(file),
+      seconds: this.plugin.settings.defaultSeconds,
+      color: this.plugin.settings.defaultColor,
     };
-    activeDocument.addEventListener('mousemove', move);
-    activeDocument.addEventListener('mouseup', up);
+    const { list } = this.rectsFor(file);
+    list.push(rect);
+    await this.saveFolderData();
+    // Stay in rectangle-draw mode so the user can keep adding without
+    // re-clicking the button. Click 'Rectangle' again to exit.
+    this.render();
+  }
+
+  /** Discard an in-flight rectangle draft (used when leaving draw mode or
+   *  when the user clicks off to a different canvas). */
+  private cancelRectDraft(): void {
+    if (!this.rectDraft) return;
+    this.rectDraft.canvas.removeEventListener('mousemove', this.rectDraft.onMove);
+    this.rectDraft.ghost.remove();
+    this.rectDraft = null;
   }
 
   // ---------- Polygon drafting ----------
@@ -1975,8 +2028,14 @@ export class SlideAndRevealView extends ItemView {
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
       if (!file) return;
-      if (this.drawingPaths.has(file.path)) this.drawingPaths.delete(file.path);
-      else { this.drawingPaths.add(file.path); this.polyDrawingPaths.delete(file.path); }
+      if (this.drawingPaths.has(file.path)) {
+        this.drawingPaths.delete(file.path);
+        // Leaving draw mode mid-draft — drop the ghost.
+        this.cancelRectDraft();
+      } else {
+        this.drawingPaths.add(file.path);
+        this.polyDrawingPaths.delete(file.path);
+      }
       this.render();
     };
 

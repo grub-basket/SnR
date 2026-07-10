@@ -1,7 +1,7 @@
 {
   "id": "slide-and-reveal",
   "name": "Slide and Reveal",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "minAppVersion": "1.7.0",
   "description": "Scroll-to-reveal flashcard study for diagrams and labeled images. Right-click a folder to open it: drop covers over each label, then scroll in place to uncover them one pair at a time. Per-folder, no slide duplication required.",
   "author": "Human",

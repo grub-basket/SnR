@@ -620,6 +620,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.targetDraftCoverId = null;
     // Polygon draft state
     this.polyDraft = null;
+    /** Rectangle draft state for click-move-click drawing. Held between the
+     *  first-corner click and the second-corner (commit) click. */
+    this.rectDraft = null;
     // Undo / redo. Two op types: a folderData snapshot, or a vault file
     // rename (so undoing the rename actually moves the file back).
     this.undoStack = [];
@@ -1331,10 +1334,6 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     this.renderRail(railHost, file, canvas);
     canvas.addEventListener("mousedown", (e) => {
-      if (this.drawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
-        this.beginRectDrag(canvas, file, e);
-        return;
-      }
       if (this.polyDrawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
         this.addPolyPoint(canvas, file, block, e);
         return;
@@ -1342,6 +1341,17 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (this.targetDraftCoverId && this.polyDraft && this.polyDraft.file === file && this.polyDraft.destination.kind === "target" && (e.target === canvas || e.target === imgEl)) {
         this.addPolyPoint(canvas, file, block, e);
         return;
+      }
+    });
+    canvas.addEventListener("click", (e) => {
+      if (!this.drawingPaths.has(file.path)) return;
+      if (e.target !== canvas && e.target !== imgEl) return;
+      if (e.detail !== 1 && e.detail !== 0) return;
+      if (!this.rectDraft || this.rectDraft.canvas !== canvas) {
+        this.cancelRectDraft();
+        this.beginRectDraft(canvas, file, e);
+      } else {
+        void this.commitRectDraft(e);
       }
     });
     canvas.addEventListener("dblclick", (e) => {
@@ -1352,56 +1362,77 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
     });
   }
-  // ---------- Rectangle drawing ----------
-  beginRectDrag(canvas, file, e) {
-    e.preventDefault();
+  // ---------- Rectangle drawing (click-move-click) ----------
+  /** First click: place the anchor corner and start a semi-transparent
+   *  preview that follows the cursor. */
+  beginRectDraft(canvas, file, e) {
     const cb = canvas.getBoundingClientRect();
-    const sx = (e.clientX - cb.left) / cb.width;
-    const sy = (e.clientY - cb.top) / cb.height;
-    const ghost = canvas.createDiv({ cls: "sNr-rect" });
+    const sx = clamp01((e.clientX - cb.left) / cb.width);
+    const sy = clamp01((e.clientY - cb.top) / cb.height);
+    const ghost = canvas.createDiv({ cls: "sNr-rect sNr-rect-ghost" });
     ghost.style.setProperty("--sNr-color", this.plugin.settings.defaultColor);
-    const move = (ev) => {
-      const cx = (ev.clientX - cb.left) / cb.width;
-      const cy = (ev.clientY - cb.top) / cb.height;
-      const x = clamp01(Math.min(sx, cx));
-      const y = clamp01(Math.min(sy, cy));
-      const w = clamp01(Math.abs(cx - sx));
-      const h = clamp01(Math.abs(cy - sy));
+    ghost.style.left = sx * 100 + "%";
+    ghost.style.top = sy * 100 + "%";
+    ghost.style.width = "0%";
+    ghost.style.height = "0%";
+    const onMove = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      const cx = clamp01((ev.clientX - rect.left) / rect.width);
+      const cy = clamp01((ev.clientY - rect.top) / rect.height);
+      const x = Math.min(sx, cx);
+      const y = Math.min(sy, cy);
+      const w = Math.abs(cx - sx);
+      const h = Math.abs(cy - sy);
       ghost.style.left = x * 100 + "%";
       ghost.style.top = y * 100 + "%";
       ghost.style.width = w * 100 + "%";
       ghost.style.height = h * 100 + "%";
     };
-    const up = async (ev) => {
-      activeDocument.removeEventListener("mousemove", move);
-      activeDocument.removeEventListener("mouseup", up);
-      ghost.remove();
-      const cx = (ev.clientX - cb.left) / cb.width;
-      const cy = (ev.clientY - cb.top) / cb.height;
-      const x = clamp01(Math.min(sx, cx));
-      const y = clamp01(Math.min(sy, cy));
-      const w = clamp01(Math.abs(cx - sx));
-      const h = clamp01(Math.abs(cy - sy));
-      if (w < 0.01 || h < 0.01) return;
-      this.snapshot();
-      const rect = {
-        id: uid(),
-        kind: "rect",
-        x,
-        y,
-        w,
-        h,
-        pair: this.nextPairFor(file),
-        seconds: this.plugin.settings.defaultSeconds,
-        color: this.plugin.settings.defaultColor
-      };
-      const { list } = this.rectsFor(file);
-      list.push(rect);
-      await this.saveFolderData();
-      this.render();
+    canvas.addEventListener("mousemove", onMove);
+    this.rectDraft = { file, canvas, sx, sy, ghost, onMove };
+  }
+  /** Second click: turn the ghost into a real cover. */
+  async commitRectDraft(e) {
+    const draft = this.rectDraft;
+    if (!draft) return;
+    const { canvas, file, sx, sy, ghost, onMove } = draft;
+    const cb = canvas.getBoundingClientRect();
+    const cx = clamp01((e.clientX - cb.left) / cb.width);
+    const cy = clamp01((e.clientY - cb.top) / cb.height);
+    const x = Math.min(sx, cx);
+    const y = Math.min(sy, cy);
+    const w = Math.abs(cx - sx);
+    const h = Math.abs(cy - sy);
+    canvas.removeEventListener("mousemove", onMove);
+    ghost.remove();
+    this.rectDraft = null;
+    if (w < 0.01 || h < 0.01) {
+      return;
+    }
+    this.snapshot();
+    const rect = {
+      id: uid(),
+      kind: "rect",
+      x,
+      y,
+      w,
+      h,
+      pair: this.nextPairFor(file),
+      seconds: this.plugin.settings.defaultSeconds,
+      color: this.plugin.settings.defaultColor
     };
-    activeDocument.addEventListener("mousemove", move);
-    activeDocument.addEventListener("mouseup", up);
+    const { list } = this.rectsFor(file);
+    list.push(rect);
+    await this.saveFolderData();
+    this.render();
+  }
+  /** Discard an in-flight rectangle draft (used when leaving draw mode or
+   *  when the user clicks off to a different canvas). */
+  cancelRectDraft() {
+    if (!this.rectDraft) return;
+    this.rectDraft.canvas.removeEventListener("mousemove", this.rectDraft.onMove);
+    this.rectDraft.ghost.remove();
+    this.rectDraft = null;
   }
   // ---------- Polygon drafting ----------
   addPolyPoint(canvas, file, block, e) {
@@ -2228,8 +2259,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
       if (!file) return;
-      if (this.drawingPaths.has(file.path)) this.drawingPaths.delete(file.path);
-      else {
+      if (this.drawingPaths.has(file.path)) {
+        this.drawingPaths.delete(file.path);
+        this.cancelRectDraft();
+      } else {
         this.drawingPaths.add(file.path);
         this.polyDrawingPaths.delete(file.path);
       }
@@ -2840,6 +2873,19 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
         new FolderPickerModal(this.app, folders, (f) => {
           void this.openForFolder(f);
         }).open();
+      }
+    });
+    this.addCommand({
+      id: "toggle-mode",
+      name: "Toggle study / edit mode",
+      callback: async () => {
+        this.settings.mode = this.settings.mode === "study" ? "edit" : "study";
+        await this.saveSettings();
+        this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
+          const v = l.view;
+          if (typeof v.render === "function") v.render();
+        });
+        new import_obsidian6.Notice("Slide and Reveal: " + this.settings.mode + " mode");
       }
     });
     this.addRibbonIcon("crosshair", "Slide and Reveal: cross-diagram quiz", () => {

@@ -50,6 +50,22 @@ export default class SlideAndRevealPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: 'toggle-mode',
+      name: 'Toggle study / edit mode',
+      callback: async () => {
+        this.settings.mode = this.settings.mode === 'study' ? 'edit' : 'study';
+        await this.saveSettings();
+        // Re-render every open S&R view so the new mode's affordances
+        // (or lack thereof) take effect immediately.
+        this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
+          const v = l.view as { render?: () => void };
+          if (typeof v.render === 'function') v.render();
+        });
+        new Notice('Slide and Reveal: ' + this.settings.mode + ' mode');
+      },
+    });
+
     // Cross-diagram quiz mode: ribbon button + command.
     this.addRibbonIcon('crosshair', 'Slide and Reveal: cross-diagram quiz', () => {
       new ScopePickerModal(this).open();
