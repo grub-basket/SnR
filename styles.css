@@ -503,6 +503,11 @@
   pointer-events: none;
   border-style: dashed;
   cursor: crosshair;
+  /* Starts at 0×0 so the click-place doesn't flash any content before
+   * the first mousemove sets a real size. Inline defaults would trip the
+   * store linter's no-static-styles-assignment rule. */
+  width: 0;
+  height: 0;
 }
 
 /* Study mode: hide editing affordances so covers look inert. Reveal

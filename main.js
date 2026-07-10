@@ -1373,8 +1373,6 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     ghost.style.setProperty("--sNr-color", this.plugin.settings.defaultColor);
     ghost.style.left = sx * 100 + "%";
     ghost.style.top = sy * 100 + "%";
-    ghost.style.width = "0%";
-    ghost.style.height = "0%";
     const onMove = (ev) => {
       const rect = canvas.getBoundingClientRect();
       const cx = clamp01((ev.clientX - rect.left) / rect.width);

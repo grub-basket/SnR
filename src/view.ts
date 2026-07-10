@@ -1014,8 +1014,9 @@ export class SlideAndRevealView extends ItemView {
     ghost.style.setProperty('--sNr-color', this.plugin.settings.defaultColor);
     ghost.style.left = (sx * 100) + '%';
     ghost.style.top = (sy * 100) + '%';
-    ghost.style.width = '0%';
-    ghost.style.height = '0%';
+    // Initial 0×0 size comes from the .sNr-rect-ghost class — the mousemove
+    // handler overrides width/height as the cursor moves. Setting them
+    // inline here would trip the store linter's no-static-styles rule.
 
     const onMove = (ev: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
