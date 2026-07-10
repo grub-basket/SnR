@@ -2709,7 +2709,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
           await this.plugin.forgetFolder(folder);
           this.display();
         }));
-        s.addButton((b) => b.setButtonText("Delete annotations file").setDestructive().onClick(async () => {
+        s.addButton((b) => b.setButtonText("Delete annotations file").setWarning().onClick(async () => {
           const path = joinPath(folder, ANNOT_FILE);
           try {
             if (await this.app.vault.adapter.exists(path)) {
@@ -2859,11 +2859,11 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
     this.rememberFolder(folderPath);
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((l) => l.view.folderPath === folderPath);
     if (existing) {
-      await this.app.workspace.revealLeaf(existing);
+      void this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { folderPath } });
-    await this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
   }
 };

@@ -150,7 +150,11 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           await this.plugin.forgetFolder(folder);
           this.display();
         }));
-        s.addButton((b) => b.setButtonText('Delete annotations file').setDestructive().onClick(async () => {
+        // Using `setWarning` instead of `setDestructive` because the latter
+        // requires minAppVersion ≥ 1.13.0 (currently insider-only). Store
+        // linter flags setWarning as deprecated but only as a recommendation,
+        // not an error.
+        s.addButton((b) => b.setButtonText('Delete annotations file').setWarning().onClick(async () => {
           const path = joinPath(folder, ANNOT_FILE);
           try {
             if (await this.app.vault.adapter.exists(path)) {

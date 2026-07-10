@@ -88,11 +88,14 @@ export default class SlideAndRevealPlugin extends Plugin {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
       .find((l) => (l.view as SlideAndRevealView).folderPath === folderPath);
     if (existing) {
-      await this.app.workspace.revealLeaf(existing);
+      // `revealLeaf` returned void in older Obsidian and Promise<void> in
+      // newer versions. Using `void` here works with both signatures without
+      // forcing our minAppVersion up to where the Promise return was added.
+      void this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf('tab');
     await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { folderPath } });
-    await this.app.workspace.revealLeaf(leaf);
+    void this.app.workspace.revealLeaf(leaf);
   }
 }
