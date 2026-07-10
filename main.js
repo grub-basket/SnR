@@ -2859,11 +2859,11 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
     this.rememberFolder(folderPath);
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((l) => l.view.folderPath === folderPath);
     if (existing) {
-      void this.app.workspace.revealLeaf(existing);
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE, active: true, state: { folderPath } });
-    void this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 };
