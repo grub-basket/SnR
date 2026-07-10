@@ -652,6 +652,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       return false;
     });
   }
+  /** Study mode is view-only: no drag/resize/select/delete/draw/rename.
+   *  Reveal actions (rail, wheel, arrow keys, dblclick-to-toggle) still work.
+   *  Every mutating entry point checks this before proceeding. */
+  isEditMode() {
+    return this.plugin.settings.mode === "edit";
+  }
   getViewType() {
     return VIEW_TYPE;
   }
@@ -759,7 +765,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const mod = e.ctrlKey || e.metaKey;
       const t = e.target;
       const inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-      if (!inField && (e.key === "Delete" || e.key === "Backspace")) {
+      if (!inField && (e.key === "Delete" || e.key === "Backspace") && this.isEditMode()) {
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
@@ -951,6 +957,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.selection = null;
     root.empty();
     root.addClass("sNr-view");
+    root.classList.toggle("sNr-mode-edit", this.isEditMode());
+    root.classList.toggle("sNr-mode-study", !this.isEditMode());
     root.tabIndex = -1;
     const settings = this.plugin.settings;
     root.style.setProperty("--sNr-scale", settings.imageScale + "%");
@@ -1149,7 +1157,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   renderThumb(file) {
     const thumb = this.sidebarEl.createDiv({ cls: "sNr-thumb" });
     thumb.dataset.path = file.path;
-    thumb.draggable = true;
+    thumb.draggable = this.isEditMode();
     const img = thumb.createEl("img");
     img.src = this.app.vault.getResourcePath(file);
     img.draggable = false;
@@ -1290,10 +1298,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const top = block.createDiv({ cls: "sNr-block-top" });
     const titleWrap = top.createDiv({ cls: "sNr-title-wrap" });
     titleWrap.createEl("h4", { text: relTo(this.folderPath, file.path) });
-    const renameBtn = titleWrap.createEl("button", { cls: "sNr-rename-btn" });
-    (0, import_obsidian4.setIcon)(renameBtn, "pencil");
-    renameBtn.title = "Rename file";
-    renameBtn.onclick = () => this.renameFile(file);
+    if (this.isEditMode()) {
+      const renameBtn = titleWrap.createEl("button", { cls: "sNr-rename-btn" });
+      (0, import_obsidian4.setIcon)(renameBtn, "pencil");
+      renameBtn.title = "Rename file";
+      renameBtn.onclick = () => this.renameFile(file);
+    }
     const body = block.createDiv({ cls: "sNr-block-body" });
     const railOnRight = this.plugin.settings.railSide === "right";
     let railHost;
@@ -1531,6 +1541,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  the target region is not a Rect — it's a sub-field of its cover. */
   selectTargetRegion(canvas, file, cover, el) {
     if (!cover.targetRegion) return;
+    if (!this.isEditMode()) return;
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
@@ -1759,6 +1770,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     wrap.addEventListener("mousedown", (e) => {
       if (e.target.classList.contains("sNr-vertex")) return;
       if (!cover.targetRegion) return;
+      if (!this.isEditMode()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1844,6 +1856,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const e = ev;
       if (e.target === handle) return;
       if (this.drawingPaths.has(file.path) || this.polyDrawingPaths.has(file.path)) return;
+      if (!this.isEditMode()) return;
       e.preventDefault();
       const cb = canvas.getBoundingClientRect();
       const startX = e.clientX, startY = e.clientY;
@@ -1868,6 +1881,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       activeDocument.addEventListener("mouseup", up);
     });
     handle.addEventListener("mousedown", (e) => {
+      if (!this.isEditMode()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -2207,10 +2221,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         }
       }
     }
+    const editMode = this.isEditMode();
     const drawBtn = this.iconBtn(tools, "square", "Rectangle");
-    drawBtn.title = "Add rectangle to the focused image (drag on it)";
+    drawBtn.title = editMode ? "Add rectangle to the focused image (drag on it)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass("sNr-active");
-    if (!file) drawBtn.disabled = true;
+    if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
       if (!file) return;
       if (this.drawingPaths.has(file.path)) this.drawingPaths.delete(file.path);
@@ -2221,9 +2236,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.render();
     };
     const polyBtn = this.iconBtn(tools, "pentagon", "Polygon");
-    polyBtn.title = "Add polygon to the focused image (click vertices, then Finalize)";
+    polyBtn.title = editMode ? "Add polygon to the focused image (click vertices, then Finalize)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass("sNr-active");
-    if (!file) polyBtn.disabled = true;
+    if (!file || !editMode) polyBtn.disabled = true;
     polyBtn.onclick = () => {
       if (!file) return;
       if (this.polyDrawingPaths.has(file.path)) {
@@ -2387,6 +2402,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   // ---------- Floating per-rect toolbar ----------
   selectShape(canvas, file, rect, el) {
+    if (!this.isEditMode()) return;
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));

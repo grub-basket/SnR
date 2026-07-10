@@ -68,6 +68,13 @@ export class SlideAndRevealView extends ItemView {
   // keyboard shortcut to know what to remove.
   private selection: { canvas: HTMLElement; file: TFile; rect: Rect; el: HTMLElement } | null = null;
 
+  /** Study mode is view-only: no drag/resize/select/delete/draw/rename.
+   *  Reveal actions (rail, wheel, arrow keys, dblclick-to-toggle) still work.
+   *  Every mutating entry point checks this before proceeding. */
+  private isEditMode(): boolean {
+    return this.plugin.settings.mode === 'edit';
+  }
+
   /** Parallel selection for target regions. Lives separately because a
    *  target region isn't a Rect — it's a sub-field of its owning cover. */
   private targetSelection: {
@@ -242,7 +249,7 @@ export class SlideAndRevealView extends ItemView {
       // text/number field (sec, pair, rename modal, etc.).
       const t = e.target as HTMLElement;
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || (t as HTMLElement).isContentEditable);
-      if (!inField && (e.key === 'Delete' || e.key === 'Backspace')) {
+      if (!inField && (e.key === 'Delete' || e.key === 'Backspace') && this.isEditMode()) {
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
@@ -470,6 +477,10 @@ export class SlideAndRevealView extends ItemView {
     this.selection = null;
     root.empty();
     root.addClass('sNr-view');
+    // Mode class drives view-only CSS (hidden resize/vertex handles,
+    // muted selection outline, etc.). Study is the default.
+    root.classList.toggle('sNr-mode-edit', this.isEditMode());
+    root.classList.toggle('sNr-mode-study', !this.isEditMode());
     root.tabIndex = -1; // make focusable so keydown bubbles up here
 
     const settings = this.plugin.settings;
@@ -719,7 +730,8 @@ export class SlideAndRevealView extends ItemView {
   renderThumb(file: TFile): void {
     const thumb = this.sidebarEl.createDiv({ cls: 'sNr-thumb' });
     thumb.dataset.path = file.path;
-    thumb.draggable = true;
+    // Reorder-by-drag is an edit action. Off in study mode.
+    thumb.draggable = this.isEditMode();
     const img = thumb.createEl('img');
     img.src = this.app.vault.getResourcePath(file);
     // Without these the browser uses the inner <img>'s native image-drag,
@@ -881,10 +893,14 @@ export class SlideAndRevealView extends ItemView {
     const top = block.createDiv({ cls: 'sNr-block-top' });
     const titleWrap = top.createDiv({ cls: 'sNr-title-wrap' });
     titleWrap.createEl('h4', { text: relTo(this.folderPath, file.path) });
-    const renameBtn = titleWrap.createEl('button', { cls: 'sNr-rename-btn' });
-    setIcon(renameBtn, 'pencil');
-    renameBtn.title = 'Rename file';
-    renameBtn.onclick = () => this.renameFile(file);
+    // Rename is an edit action. Skip the pencil entirely in study mode so
+    // there's no accidental vault mutation surface.
+    if (this.isEditMode()) {
+      const renameBtn = titleWrap.createEl('button', { cls: 'sNr-rename-btn' });
+      setIcon(renameBtn, 'pencil');
+      renameBtn.title = 'Rename file';
+      renameBtn.onclick = () => this.renameFile(file);
+    }
     // The per-image action buttons (Rectangle/Polygon/Reveal/Hide) used to
     // live here; they were moved to the main header so they're always
     // reachable without scrolling. They act on whichever image is at the
@@ -1152,6 +1168,7 @@ export class SlideAndRevealView extends ItemView {
    *  the target region is not a Rect — it's a sub-field of its cover. */
   selectTargetRegion(canvas: HTMLElement, file: TFile, cover: Rect, el: HTMLElement): void {
     if (!cover.targetRegion) return;
+    if (!this.isEditMode()) return;
     const root = canvas.closest('.sNr-view') as HTMLElement;
     // Clean up any other selections / toolbars.
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
@@ -1400,6 +1417,8 @@ export class SlideAndRevealView extends ItemView {
       // Don't start drags from vertex handles — they have their own logic.
       if ((e.target as HTMLElement).classList.contains('sNr-vertex')) return;
       if (!cover.targetRegion) return;
+      // Study mode is view-only — no drag.
+      if (!this.isEditMode()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1502,6 +1521,8 @@ export class SlideAndRevealView extends ItemView {
       const e = ev as MouseEvent;
       if (e.target === handle) return;
       if (this.drawingPaths.has(file.path) || this.polyDrawingPaths.has(file.path)) return;
+      // Study mode is view-only — don't move covers around.
+      if (!this.isEditMode()) return;
       e.preventDefault();
       const cb = canvas.getBoundingClientRect();
       const startX = e.clientX, startY = e.clientY;
@@ -1530,6 +1551,8 @@ export class SlideAndRevealView extends ItemView {
 
     // Resize handle (works for rect AND polygon — scales bbox; polygon points are local 0..1, so they auto-scale)
     handle.addEventListener('mousedown', (e: MouseEvent) => {
+      // Study mode is view-only — no resizing.
+      if (!this.isEditMode()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1940,10 +1963,16 @@ export class SlideAndRevealView extends ItemView {
       }
     }
 
+    // Drawing controls only make sense in edit mode. In study mode we
+    // still show them so the toolbar layout doesn't shift, but disable
+    // clicks and explain why via tooltip.
+    const editMode = this.isEditMode();
     const drawBtn = this.iconBtn(tools, 'square', 'Rectangle');
-    drawBtn.title = 'Add rectangle to the focused image (drag on it)';
+    drawBtn.title = editMode
+      ? 'Add rectangle to the focused image (drag on it)'
+      : 'Drawing is disabled in study mode. Switch to edit mode in settings.';
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass('sNr-active');
-    if (!file) drawBtn.disabled = true;
+    if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
       if (!file) return;
       if (this.drawingPaths.has(file.path)) this.drawingPaths.delete(file.path);
@@ -1952,9 +1981,11 @@ export class SlideAndRevealView extends ItemView {
     };
 
     const polyBtn = this.iconBtn(tools, 'pentagon', 'Polygon');
-    polyBtn.title = 'Add polygon to the focused image (click vertices, then Finalize)';
+    polyBtn.title = editMode
+      ? 'Add polygon to the focused image (click vertices, then Finalize)'
+      : 'Drawing is disabled in study mode. Switch to edit mode in settings.';
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass('sNr-active');
-    if (!file) polyBtn.disabled = true;
+    if (!file || !editMode) polyBtn.disabled = true;
     polyBtn.onclick = () => {
       if (!file) return;
       if (this.polyDrawingPaths.has(file.path)) {
@@ -2141,6 +2172,7 @@ export class SlideAndRevealView extends ItemView {
 
   // ---------- Floating per-rect toolbar ----------
   selectShape(canvas: HTMLElement, file: TFile, rect: Rect, el: HTMLElement): void {
+    if (!this.isEditMode()) return;
     const root = canvas.closest('.sNr-view') as HTMLElement;
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     root.querySelectorAll('.sNr-target-region.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));

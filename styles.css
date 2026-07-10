@@ -496,6 +496,13 @@
 .sNr-vertex:hover { background: #fff; }
 .sNr-vertex:active { cursor: grabbing; }
 
+/* Study mode: hide editing affordances so covers look inert. Reveal
+ * animations, dblclick-to-toggle, and the rail all keep working. */
+.sNr-mode-study .sNr-rect { cursor: default; }
+.sNr-mode-study .sNr-rect .sNr-handle { display: none; }
+.sNr-mode-study .sNr-vertex { display: none; }
+.sNr-mode-study .sNr-target-region { cursor: default; }
+
 /* Polygon-draft overlay */
 .sNr-poly-draft {
   position: absolute; inset: 0; pointer-events: none;
