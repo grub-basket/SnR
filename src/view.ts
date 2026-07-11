@@ -471,6 +471,13 @@ export class SlideAndRevealView extends ItemView {
   // ---------- Render ----------
   render(): void {
     const root = this.containerEl.children[1] as HTMLElement;
+    // Any in-flight rectangle draft is bound to the CURRENT canvas
+    // element which render() is about to detach. Cancel it here so the
+    // stored state (canvas / ghost / onMove) doesn't outlive the DOM
+    // it points at — otherwise a subsequent mode toggle or scroll
+    // re-render leaves `rectDraft` pointing at a stale canvas until
+    // the next click self-heals it.
+    this.cancelRectDraft();
     // Preserve scroll position across re-renders (every action that
     // calls render() — adding shapes, drawing, deleting, etc. — would
     // otherwise jump back to the top of the content pane). On the
@@ -542,7 +549,14 @@ export class SlideAndRevealView extends ItemView {
     modeBtn.onclick = async () => {
       this.plugin.settings.mode = this.plugin.settings.mode === 'study' ? 'edit' : 'study';
       await this.plugin.saveSettings();
-      updateModeBtn();
+      // Re-render EVERY open S&R view — not just this one. Mode is a
+      // global setting, so a split-view sibling was stalling at the old
+      // mode's DOM state until it was clicked/scrolled. Matches the
+      // palette command and settings-dropdown re-render pattern.
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
+        const v = l.view as { render?: () => void };
+        if (typeof v.render === 'function') v.render();
+      });
     };
 
     const undoBtn = row.createEl('button');
@@ -2023,7 +2037,7 @@ export class SlideAndRevealView extends ItemView {
     const editMode = this.isEditMode();
     const drawBtn = this.iconBtn(tools, 'square', 'Rectangle');
     drawBtn.title = editMode
-      ? 'Add rectangle to the focused image (drag on it)'
+      ? 'Add rectangle to the focused image (click a corner, move, click again)'
       : 'Drawing is disabled in study mode. Switch to edit mode in settings.';
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass('sNr-active');
     if (!file || !editMode) drawBtn.disabled = true;

@@ -954,6 +954,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   // ---------- Render ----------
   render() {
     const root = this.containerEl.children[1];
+    this.cancelRectDraft();
     const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : this.folderData.scrollTop ?? 0;
     activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     activeDocument.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
@@ -999,7 +1000,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     modeBtn.onclick = async () => {
       this.plugin.settings.mode = this.plugin.settings.mode === "study" ? "edit" : "study";
       await this.plugin.saveSettings();
-      updateModeBtn();
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
+        const v = l.view;
+        if (typeof v.render === "function") v.render();
+      });
     };
     const undoBtn = row.createEl("button");
     (0, import_obsidian4.setIcon)(undoBtn, "undo-2");
@@ -2252,7 +2256,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     const editMode = this.isEditMode();
     const drawBtn = this.iconBtn(tools, "square", "Rectangle");
-    drawBtn.title = editMode ? "Add rectangle to the focused image (drag on it)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
+    drawBtn.title = editMode ? "Add rectangle to the focused image (click a corner, move, click again)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass("sNr-active");
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
