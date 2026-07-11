@@ -486,6 +486,10 @@ export class SlideAndRevealView extends ItemView {
     const savedScroll = this.scrollerEl
       ? this.scrollerEl.scrollTop
       : (this.folderData.scrollTop ?? 0);
+    // Horizontal scroll matters once the image is zoomed past 100% (the
+    // content pane overflows sideways). Preserve it too, else a re-render
+    // yanks the pane back to the left edge.
+    const savedScrollLeft = this.scrollerEl ? this.scrollerEl.scrollLeft : 0;
     // The selection toolbar lives on activeDocument.body (so it can't be
     // clipped by canvas overflow). Clean up any stragglers before
     // rebuilding the view. Same for thumbnail tooltips. The selection
@@ -721,13 +725,17 @@ export class SlideAndRevealView extends ItemView {
     // scroll restore so currentBlockIndex sees the right viewport.
     window.requestAnimationFrame(() => {
       this.scrollerEl.scrollTop = savedScroll;
+      this.scrollerEl.scrollLeft = savedScrollLeft;
       this.refreshHeaderTools();
     });
 
     // Keep keyboard focus on the root so undo/redo (and other shortcuts)
     // keep working after actions that destroy the previously-focused
     // element (e.g. clicking the trash button to delete a rect).
-    if (!root.contains(activeDocument.activeElement)) root.focus();
+    // preventScroll is REQUIRED: without it, focusing the (wide) root
+    // scrolls its left edge into view, snapping the content pane to the
+    // left on every render — very visible when zoomed past 100%.
+    if (!root.contains(activeDocument.activeElement)) root.focus({ preventScroll: true });
   }
 
   bindDivider(divider: HTMLElement, root: HTMLElement): void {

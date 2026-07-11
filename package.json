@@ -1,6 +1,6 @@
 {
   "name": "slide-and-reveal",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Obsidian plugin: scroll-to-reveal flashcard study for labeled images.",
   "main": "main.js",
   "type": "module",

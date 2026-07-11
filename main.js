@@ -956,6 +956,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const root = this.containerEl.children[1];
     this.cancelRectDraft();
     const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : this.folderData.scrollTop ?? 0;
+    const savedScrollLeft = this.scrollerEl ? this.scrollerEl.scrollLeft : 0;
     activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     activeDocument.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
     this.selection = null;
@@ -1136,9 +1137,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     for (const img of images) this.renderImage(img);
     window.requestAnimationFrame(() => {
       this.scrollerEl.scrollTop = savedScroll;
+      this.scrollerEl.scrollLeft = savedScrollLeft;
       this.refreshHeaderTools();
     });
-    if (!root.contains(activeDocument.activeElement)) root.focus();
+    if (!root.contains(activeDocument.activeElement)) root.focus({ preventScroll: true });
   }
   bindDivider(divider, root) {
     divider.addEventListener("mousedown", (e) => {
