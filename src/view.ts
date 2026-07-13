@@ -49,6 +49,11 @@ export class SlideAndRevealView extends ItemView {
   // Polygon draft state
   private polyDraft: PolyDraft | null = null;
 
+  /** Path of the image the user last clicked to focus (see focusBlock /
+   *  resolveFocusBlock). Overrides the scroll-position focus heuristic so
+   *  short lists — where nothing scrolls — can still target any slide. */
+  private activeBlockPath: string | null = null;
+
   /** Rectangle draft state for click-move-click drawing. Held between the
    *  first-corner click and the second-corner (commit) click. */
   private rectDraft: {
@@ -808,6 +813,9 @@ export class SlideAndRevealView extends ItemView {
         // Instant jump (no smooth scroll — long slides take too long)
         this.scrollerEl.scrollTop = target.offsetTop - this.scrollerEl.offsetTop;
       }
+      // Focus the clicked slide so the header tools target it — matters on
+      // short lists where the jump above doesn't actually scroll.
+      this.focusBlock(file.path);
       this.sidebarEl.querySelectorAll('.sNr-thumb-active').forEach((t) => t.removeClass('sNr-thumb-active'));
       thumb.addClass('sNr-thumb-active');
     };
@@ -885,16 +893,59 @@ export class SlideAndRevealView extends ItemView {
     return blocks.length - 1;
   }
 
+  /** Which block the header tools act on. Prefers an explicitly-focused
+   *  block (set by clicking a slide) as long as it's still rendered and at
+   *  least partially in view; otherwise falls back to the scroll-position
+   *  heuristic (first block whose bottom is below the fold).
+   *
+   *  Click-to-focus is what makes a SHORT list usable: when every image
+   *  fits on screen at once there's nothing to scroll, so the scroll
+   *  heuristic always returned block 0 and you could never target slide 2+.
+   */
+  private resolveFocusBlock(blocks: HTMLElement[]): HTMLElement | null {
+    if (!blocks.length) return null;
+    const scroller = this.scrollerEl;
+    const top = scroller.scrollTop;
+    const viewBottom = top + scroller.clientHeight;
+    if (this.activeBlockPath) {
+      const active = blocks.find((b) => b.dataset.path === this.activeBlockPath);
+      if (active) {
+        const aTop = active.offsetTop - scroller.offsetTop;
+        const aBottom = aTop + active.offsetHeight;
+        // Visible if any part overlaps the viewport (with the same 10px
+        // slack the scroll heuristic uses).
+        if (aTop < viewBottom && aBottom > top + 10) return active;
+      }
+    }
+    const chosen = blocks[this.currentBlockIndex(blocks)];
+    this.activeBlockPath = chosen.dataset.path ?? null;
+    return chosen;
+  }
+
+  /** Explicitly focus a block (called when the user clicks a slide). Updates
+   *  the header tools + focus highlight to target it. */
+  private focusBlock(path: string): void {
+    if (this.activeBlockPath === path) return;
+    this.activeBlockPath = path;
+    this.refreshHeaderTools();
+  }
+
   /** Move +1 / -1 in the image list and instant-scroll to it. */
   jumpImage(delta: number): void {
     const blocks = Array.from(this.scrollerEl.querySelectorAll('.sNr-block')) as HTMLElement[];
     if (!blocks.length) return;
-    const cur = this.currentBlockIndex(blocks);
+    // Move relative to the currently-focused block (which may be an
+    // explicit click-focus, not just the scroll-top block).
+    const focused = this.resolveFocusBlock(blocks);
+    const cur = focused ? blocks.indexOf(focused) : this.currentBlockIndex(blocks);
     const next = Math.max(0, Math.min(blocks.length - 1, cur + delta));
     const target = blocks[next];
     this.scrollerEl.scrollTop = target.offsetTop - this.scrollerEl.offsetTop;
     const path = target.dataset.path;
     if (path) {
+      // Prev/next is an explicit focus move — record it so the header tools
+      // follow even if the target is already fully on-screen (short lists).
+      this.focusBlock(path);
       this.sidebarEl.querySelectorAll('.sNr-thumb-active').forEach((t) => t.removeClass('sNr-thumb-active'));
       const thumb = this.sidebarEl.querySelector(`.sNr-thumb[data-path="${CSS.escape(path)}"]`);
       if (thumb) thumb.addClass('sNr-thumb-active');
@@ -922,6 +973,13 @@ export class SlideAndRevealView extends ItemView {
   renderImage(file: TFile): void {
     const block = this.scrollerEl.createDiv({ cls: 'sNr-block' });
     block.dataset.path = file.path;
+
+    // Click-to-focus: interacting anywhere in this block makes it the
+    // target for the header tools. Essential for short lists that don't
+    // scroll (the scroll-position heuristic can't reach slide 2+ there).
+    // Bubble phase + a plain focus set, so shape/canvas/rail handlers still
+    // run normally afterward.
+    block.addEventListener('mousedown', () => this.focusBlock(file.path));
 
     const top = block.createDiv({ cls: 'sNr-block-top' });
     const titleWrap = top.createDiv({ cls: 'sNr-title-wrap' });
@@ -2148,7 +2206,8 @@ export class SlideAndRevealView extends ItemView {
     if (!this.scrollerEl) return null;
     const blocks = Array.from(this.scrollerEl.querySelectorAll('.sNr-block')) as HTMLElement[];
     if (!blocks.length) return null;
-    const block = blocks[this.currentBlockIndex(blocks)];
+    const block = this.resolveFocusBlock(blocks);
+    if (!block) return null;
     const path = block.dataset.path;
     if (!path) return null;
     const f = this.app.vault.getAbstractFileByPath(path);
