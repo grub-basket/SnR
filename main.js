@@ -139,18 +139,19 @@ async function loadFolderData(app, folder) {
       const raw = await adapter.read(path);
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === "object") return parsed;
-    } catch {
+    } catch (e) {
     }
   }
   return null;
 }
 async function buildQuizPool(app, scope) {
+  var _a;
   const folders = scope.kind === "folder" ? [scope.folder] : scope.folders;
   const items = [];
   for (const folder of folders) {
     const data = await loadFolderData(app, folder);
     if (!data) continue;
-    for (const [relPath, covers] of Object.entries(data.rects ?? {})) {
+    for (const [relPath, covers] of Object.entries((_a = data.rects) != null ? _a : {})) {
       if (!IMG_RE.test(relPath)) continue;
       for (const cover of covers) {
         if (!cover.targetRegion) continue;
@@ -208,6 +209,7 @@ var ScopePickerModal = class extends import_obsidian3.Modal {
     this.plugin = plugin;
   }
   onOpen() {
+    var _a;
     const { contentEl, titleEl } = this;
     titleEl.setText("Quiz: choose scope");
     contentEl.empty();
@@ -216,7 +218,7 @@ var ScopePickerModal = class extends import_obsidian3.Modal {
     });
     const view = activeSnRView(this.app);
     const imagePath = currentImagePath(view);
-    const folder = view?.folderPath ?? null;
+    const folder = (_a = view == null ? void 0 : view.folderPath) != null ? _a : null;
     const knownFolders = this.plugin.settings.knownFolders.slice();
     const btnRow = contentEl.createDiv({ cls: "sNr-quiz-scope-row" });
     const slideBtn = btnRow.createEl("button", { text: "This slide" });
@@ -328,13 +330,14 @@ var QuizModal = class extends import_obsidian3.Modal {
     this.modalEl.addClass("sNr-quiz-modal");
   }
   async coversFor(item) {
+    var _a, _b;
     let fd = this.folderCache.get(item.folder);
     if (fd === void 0) {
       fd = await loadFolderData(this.app, item.folder);
       this.folderCache.set(item.folder, fd);
     }
     if (!fd) return [];
-    return fd.rects?.[item.relPath] ?? [];
+    return (_b = (_a = fd.rects) == null ? void 0 : _a[item.relPath]) != null ? _b : [];
   }
   onOpen() {
     this.renderStep();
@@ -957,9 +960,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   // ---------- Render ----------
   render() {
+    var _a;
     const root = this.containerEl.children[1];
     this.cancelRectDraft();
-    const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : this.folderData.scrollTop ?? 0;
+    const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : (_a = this.folderData.scrollTop) != null ? _a : 0;
     const savedScrollLeft = this.scrollerEl ? this.scrollerEl.scrollLeft : 0;
     activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
     activeDocument.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
@@ -1129,8 +1133,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     if (orderChanged) this.scheduleSave();
     const orderIndex = new Map(this.folderData.order.map((p, i) => [p, i]));
     images.sort((a, b) => {
-      const ai = orderIndex.get(relTo(this.folderPath, a.path)) ?? Infinity;
-      const bi = orderIndex.get(relTo(this.folderPath, b.path)) ?? Infinity;
+      var _a2, _b;
+      const ai = (_a2 = orderIndex.get(relTo(this.folderPath, a.path))) != null ? _a2 : Infinity;
+      const bi = (_b = orderIndex.get(relTo(this.folderPath, b.path))) != null ? _b : Infinity;
       return ai - bi;
     });
     if (!images.length) {
@@ -1214,7 +1219,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         e.dataTransfer.effectAllowed = "move";
         try {
           e.dataTransfer.setData("text/plain", file.path);
-        } catch {
+        } catch (e2) {
         }
       }
       this.draggingThumbPath = file.path;
@@ -1245,9 +1250,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       thumb.classList.remove("sNr-drop-above", "sNr-drop-below");
     });
     thumb.addEventListener("drop", async (e) => {
+      var _a;
       e.preventDefault();
       thumb.classList.remove("sNr-drop-above", "sNr-drop-below");
-      const sourcePath = e.dataTransfer?.getData("text/plain") || this.draggingThumbPath || "";
+      const sourcePath = ((_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain")) || this.draggingThumbPath || "";
       if (!sourcePath || sourcePath === file.path) return;
       const r = thumb.getBoundingClientRect();
       const before = e.clientY < r.top + r.height / 2;
@@ -1286,6 +1292,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  heuristic always returned block 0 and you could never target slide 2+.
    */
   resolveFocusBlock(blocks) {
+    var _a;
     if (!blocks.length) return null;
     const scroller = this.scrollerEl;
     const top = scroller.scrollTop;
@@ -1299,7 +1306,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
     }
     const chosen = blocks[this.currentBlockIndex(blocks)];
-    this.activeBlockPath = chosen.dataset.path ?? null;
+    this.activeBlockPath = (_a = chosen.dataset.path) != null ? _a : null;
     return chosen;
   }
   /** Explicitly focus a block (called when the user clicks a slide). Updates
@@ -1402,7 +1409,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
     });
     canvas.addEventListener("dblclick", (e) => {
-      if (this.polyDrawingPaths.has(file.path) || this.targetDraftCoverId && this.polyDraft?.file === file) {
+      var _a;
+      if (this.polyDrawingPaths.has(file.path) || this.targetDraftCoverId && ((_a = this.polyDraft) == null ? void 0 : _a.file) === file) {
         e.preventDefault();
         e.stopPropagation();
         this.commitPolyDraft();
@@ -1815,9 +1823,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  line from the cover's bbox centre to the target's centre, so the
    *  pairing is visible during authoring/study. */
   renderTargetRegionOverlay(canvas, cover) {
+    var _a, _b;
     const tr = cover.targetRegion;
     if (!tr) return;
-    const file = this.currentImageContext()?.file ?? null;
+    const file = (_b = (_a = this.currentImageContext()) == null ? void 0 : _a.file) != null ? _b : null;
     const wrap = canvas.createDiv({ cls: "sNr-target-region" });
     wrap.dataset.coverId = cover.id;
     wrap.style.left = tr.x * 100 + "%";
@@ -1834,7 +1843,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     wrap.appendChild(svg);
     const resolveFile = () => {
       const block = wrap.closest(".sNr-block");
-      const path = block?.dataset.path;
+      const path = block == null ? void 0 : block.dataset.path;
       const f = path ? this.app.vault.getAbstractFileByPath(path) : null;
       return f instanceof import_obsidian4.TFile ? f : file;
     };
@@ -1987,12 +1996,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  grouped by their pair number (ascending); unpaired shapes are each their
    *  own slot, appended in original order. */
   computeRevealGroups(file) {
+    var _a;
     const { list } = this.rectsFor(file);
     const pairMap = /* @__PURE__ */ new Map();
     const unpaired = [];
     for (const r of list) {
       if (r.pair && r.pair > 0) {
-        const ids = pairMap.get(r.pair) ?? [];
+        const ids = (_a = pairMap.get(r.pair)) != null ? _a : [];
         ids.push(r.id);
         pairMap.set(r.pair, ids);
       } else {
@@ -2027,7 +2037,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
     }
     const block = canvas.closest(".sNr-block");
-    const rail = block?.querySelector(".sNr-rail");
+    const rail = block == null ? void 0 : block.querySelector(".sNr-rail");
     if (rail) {
       const total = groups.length;
       const thumb = rail.querySelector(".sNr-rail-thumb");
@@ -2040,13 +2050,15 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
   }
   bumpRevealStep(file, canvas, delta) {
+    var _a, _b;
     const groups = this.computeRevealGroups(file);
     const relKey = relTo(this.folderPath, file.path);
-    const cur = this.folderData.revealSteps?.[relKey] ?? 0;
+    const cur = (_b = (_a = this.folderData.revealSteps) == null ? void 0 : _a[relKey]) != null ? _b : 0;
     this.setRevealStep(file, canvas, groups, cur + delta);
   }
   /** Render the vertical reveal-slider on the left side of an image. */
   renderRail(host, file, canvas) {
+    var _a, _b;
     const groups = this.computeRevealGroups(file);
     const total = groups.length;
     const rail = host.createDiv({ cls: "sNr-rail" });
@@ -2080,7 +2092,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     };
     rail.createDiv({ cls: "sNr-rail-label" });
     const relKey = relTo(this.folderPath, file.path);
-    const cur = this.folderData.revealSteps?.[relKey] ?? 0;
+    const cur = (_b = (_a = this.folderData.revealSteps) == null ? void 0 : _a[relKey]) != null ? _b : 0;
     this.setRevealStep(file, canvas, groups, cur);
     const beginScrub = (startEvt) => {
       startEvt.preventDefault();
@@ -2145,7 +2157,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const t = window.setTimeout(() => {
       this.togglePair(canvas, rect, false);
       this.timers.delete(rect.id);
-      onEnd?.();
+      onEnd == null ? void 0 : onEnd();
     }, seconds * 1e3);
     this.timers.set(rect.id, t);
   }
@@ -2274,11 +2286,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  whichever image is currently at the top of the visible area
    *  (currentImageContext). Called on render and on scroll. */
   refreshHeaderTools() {
+    var _a, _b, _c, _d;
     const tools = this.headerToolsEl;
     if (!tools) return;
     tools.empty();
     const ctx = this.currentImageContext();
-    const file = ctx?.file ?? null;
+    const file = (_a = ctx == null ? void 0 : ctx.file) != null ? _a : null;
     if (this.scrollerEl) {
       const blocks = Array.from(this.scrollerEl.querySelectorAll(".sNr-block"));
       const focusedPath = ctx ? ctx.file.path : null;
@@ -2328,8 +2341,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
       this.render();
     };
-    const draftingFile = this.polyDraft?.file ?? null;
-    const isTargetDrafting = this.polyDraft?.destination.kind === "target";
+    const draftingFile = (_c = (_b = this.polyDraft) == null ? void 0 : _b.file) != null ? _c : null;
+    const isTargetDrafting = ((_d = this.polyDraft) == null ? void 0 : _d.destination.kind) === "target";
     const regularDraftingActive = !!(draftingFile && this.polyDrawingPaths.has(draftingFile.path));
     if (this.polyDraft && (regularDraftingActive || isTargetDrafting)) {
       const doneBtn = tools.createEl("button", { cls: "sNr-iconbtn sNr-iconbtn-icon-only sNr-poly-done" });
@@ -2381,7 +2394,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  quiz scope picker so its "this slide" choice matches the same image
    *  the focused-block outline highlights. */
   getFocusedImagePath() {
-    return this.currentImageContext()?.file.path ?? null;
+    var _a, _b;
+    return (_b = (_a = this.currentImageContext()) == null ? void 0 : _a.file.path) != null ? _b : null;
   }
   currentImageContext() {
     if (!this.scrollerEl) return null;
@@ -2405,9 +2419,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.plugin.settings.imageScale = clamped;
     const root = this.containerEl.children[1];
     if (root) root.style.setProperty("--sNr-scale", clamped + "%");
-    const slider = root?.querySelector(".sNr-scale-slider");
+    const slider = root == null ? void 0 : root.querySelector(".sNr-scale-slider");
     if (slider) slider.value = String(Math.min(200, clamped));
-    const pct = root?.querySelector(".sNr-scale-pct");
+    const pct = root == null ? void 0 : root.querySelector(".sNr-scale-pct");
     if (pct) pct.value = clamped + "%";
     if (save) this.plugin.saveSettings();
   }
@@ -2450,7 +2464,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   /** Create a button with a Lucide icon followed by text. */
   iconBtn(parent, icon, text, opts) {
-    const btn = parent.createEl("button", { cls: "sNr-iconbtn" + (opts?.cls ? " " + opts.cls : "") });
+    const btn = parent.createEl("button", { cls: "sNr-iconbtn" + ((opts == null ? void 0 : opts.cls) ? " " + opts.cls : "") });
     const ico = btn.createSpan({ cls: "sNr-iconbtn-ico" });
     (0, import_obsidian4.setIcon)(ico, icon);
     if (text) btn.createSpan({ cls: "sNr-iconbtn-text", text });
@@ -2856,7 +2870,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
       let entries;
       try {
         entries = await this.app.vault.adapter.list(dir);
-      } catch {
+      } catch (e) {
         return;
       }
       for (const f of entries.files) {

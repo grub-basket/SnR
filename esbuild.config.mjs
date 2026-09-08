@@ -23,7 +23,13 @@ const opts = {
   bundle: true,
   external: ['obsidian', 'electron', '@codemirror/*', '@lezer/*'],
   format: 'cjs',
-  target: 'es2020',
+  // es2018 matches Obsidian's official sample-plugin target. Older mobile
+  // webviews (esp. iOS JavaScriptCore) can fail to PARSE es2020 syntax that
+  // esbuild otherwise passes straight through — a parse failure surfaces as
+  // "this plugin failed to load", desktop-fine / mobile-broken. Transpiling
+  // down to es2018 (optional chaining, nullish coalescing, etc. lowered) is
+  // the safe floor for a mobile-supporting plugin.
+  target: 'es2018',
   outfile: 'main.js',
   sourcemap: prod ? false : 'inline',
   treeShaking: true,
