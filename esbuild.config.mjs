@@ -5,8 +5,12 @@ import { fileURLToPath } from 'url';
 const prod = process.argv.includes('--prod');
 const watch = process.argv.includes('--watch');
 
+// Deploy into a folder named for the plugin ID ("slide-and-reveal"), NOT the
+// display name ("Slide & Reveal"). Obsidian and Obsidian Sync key plugins by
+// ID; a display-name folder is non-standard and — if it coexists with the
+// ID folder — creates a duplicate-ID state that breaks plugin sync to mobile.
 const PLUGIN_DIR = process.env.PLUGIN_DIR
-  || fileURLToPath(new URL('../Claude Dev Vault/.obsidian/plugins/Slide & Reveal', import.meta.url));
+  || fileURLToPath(new URL('../Claude Dev Vault/.obsidian/plugins/slide-and-reveal', import.meta.url));
 
 function copyAssets() {
   if (!existsSync(PLUGIN_DIR)) mkdirSync(PLUGIN_DIR, { recursive: true });
