@@ -11,8 +11,9 @@
 
 import type { App } from 'obsidian';
 import { Notice, TFile, TFolder } from 'obsidian';
-import { ANNOT_FILE, LEGACY_ANNOT_FILE, IMG_RE, type FolderData, type Rect, type TargetRegion } from './types';
+import { IMG_RE, type FolderData, type Rect, type TargetRegion } from './types';
 import { joinPath } from './util';
+import { parseAnnotations, readAnnotationRevision } from './annotations';
 
 export type QuizScope =
   | { kind: 'folder'; folder: string }
@@ -40,19 +41,16 @@ export interface QuizItem {
 /** Load a folder's annotation file. Reads the new filename first, falls back
  *  to the legacy one, returns null if neither exists or it's malformed. */
 export async function loadFolderData(app: App, folder: string): Promise<FolderData | null> {
-  const adapter = app.vault.adapter;
-  for (const name of [ANNOT_FILE, LEGACY_ANNOT_FILE]) {
-    const path = joinPath(folder, name);
-    try {
-      if (!(await adapter.exists(path))) continue;
-      const raw = await adapter.read(path);
-      const parsed = JSON.parse(raw) as FolderData;
-      if (parsed && typeof parsed === 'object') return parsed;
-    } catch {
-      // Fall through; try the next candidate.
-    }
+  try {
+    const { raw } = await readAnnotationRevision(app.vault.adapter, folder);
+    if (raw === null) return null;
+    const { data, valid } = parseAnnotations(raw);
+    if (!valid) new Notice(`Some invalid annotations in ${folder} were skipped for this quiz.`);
+    return data;
+  } catch {
+    new Notice(`Couldn't read annotations in ${folder}.`);
+    return null;
   }
-  return null;
 }
 
 /** Build a quiz pool from one or more folders. Returns every cover that has

@@ -4,11 +4,15 @@ import { SlideAndRevealView } from './view';
 import { SlideAndRevealSettingTab } from './settings';
 import { FolderPickerModal } from './modals';
 import { ScopePickerModal } from './quiz-modals';
+import { AnnotationStore } from './annotations';
+import { safeColor } from './util';
 
 export default class SlideAndRevealPlugin extends Plugin {
   settings!: SlideAndRevealSettings;
+  annotations!: AnnotationStore;
 
   async onload(): Promise<void> {
+    this.annotations = new AnnotationStore(this.app.vault.adapter);
     await this.loadSettings();
     this.registerView(VIEW_TYPE, (leaf) => new SlideAndRevealView(leaf, this));
 
@@ -82,6 +86,7 @@ export default class SlideAndRevealPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     if (!Array.isArray(this.settings.knownFolders)) this.settings.knownFolders = [];
+    this.settings.defaultColor = safeColor(this.settings.defaultColor);
   }
   async saveSettings(): Promise<void> { await this.saveData(this.settings); }
 
@@ -97,6 +102,21 @@ export default class SlideAndRevealPlugin extends Plugin {
   forgetFolder(path: string): Promise<void> {
     this.settings.knownFolders = this.settings.knownFolders.filter((p) => p !== path);
     return this.saveSettings();
+  }
+
+  async archiveAnnotations(folder: string): Promise<void> {
+    const views = this.app.workspace.getLeavesOfType(VIEW_TYPE)
+      .map(leaf => leaf.view as SlideAndRevealView).filter(view => view.folderPath === folder);
+    // Stop delayed/in-flight view saves before moving either annotation file.
+    await Promise.all(views.map(view => view.pauseAnnotationSaving('Annotations archived. Reload to start again.')));
+    try {
+      await this.annotations.archive(folder);
+      views.forEach(view => view.clearArchivedAnnotations());
+      await this.forgetFolder(folder);
+    } catch (error) {
+      views.forEach(view => { void view.pauseAnnotationSaving('Archiving failed. Reload annotations before editing.'); });
+      throw error;
+    }
   }
 
   async openForFolder(folderPath: string): Promise<void> {

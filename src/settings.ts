@@ -1,7 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
-import { ANNOT_FILE, LEGACY_ANNOT_FILE } from './types';
-import { joinPath } from './util';
+import { ANNOT_FILE, LEGACY_ANNOT_FILE, VIEW_TYPE } from './types';
 
 export class SlideAndRevealSettingTab extends PluginSettingTab {
   plugin: SlideAndRevealPlugin;
@@ -32,10 +31,24 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
         .onChange(async (v) => {
           this.plugin.settings.mode = v as 'study' | 'edit';
           await this.plugin.saveSettings();
-          this.app.workspace.getLeavesOfType('slide-and-reveal-view').forEach((l) => {
+          this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
             const v2 = l.view as { render?: () => void };
             if (typeof v2.render === 'function') v2.render();
           });
+        }));
+
+    new Setting(containerEl)
+      .setName('Allow edits in Study mode')
+      .setDesc('Turn off to lock covers, target regions, image names and image order while studying. Revealing and navigation still work, and study progress is saved. Edit mode always allows edits.')
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.allowEditsInStudyMode)
+        .onChange(async (value) => {
+          this.plugin.settings.allowEditsInStudyMode = value;
+          this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+            const view = leaf.view as { render?: () => void };
+            view.render?.();
+          });
+          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
@@ -67,7 +80,7 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           // Re-render any open Slide and Reveal views so the change shows
           // up immediately without needing to reopen them.
-          this.app.workspace.getLeavesOfType('slide-and-reveal-view').forEach((l) => {
+          this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
             const v2 = l.view as { render?: () => void };
             if (typeof v2.render === 'function') v2.render();
           });
@@ -154,18 +167,14 @@ export class SlideAndRevealSettingTab extends PluginSettingTab {
         // requires minAppVersion ≥ 1.13.0 (currently insider-only). Store
         // linter flags setWarning as deprecated but only as a recommendation,
         // not an error.
-        s.addButton((b) => b.setButtonText('Delete annotations file').setWarning().onClick(async () => {
-          const path = joinPath(folder, ANNOT_FILE);
+        s.addButton((b) => b.setButtonText('Archive annotations').setWarning().onClick(async () => {
           try {
-            if (await this.app.vault.adapter.exists(path)) {
-              await this.app.vault.adapter.remove(path);
-              new Notice(`Deleted ${path}`);
-            }
+            await this.plugin.archiveAnnotations(folder);
+            new Notice(`Annotations archived in ${folder}. Original files were kept as backups.`);
           } catch (e) {
             console.error(e);
-            new Notice('Delete failed (see console)');
+            new Notice('Archive failed (see console)');
           }
-          await this.plugin.forgetFolder(folder);
           this.display();
         }));
       }

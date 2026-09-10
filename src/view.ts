@@ -1,7 +1,8 @@
 import { ItemView, Notice, Scope, TAbstractFile, TFile, TFolder, WorkspaceLeaf, ViewStateResult, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
-import { VIEW_TYPE, IMG_RE, ANNOT_FILE, LEGACY_ANNOT_FILE, FolderData, Rect, Point, TargetRegion } from './types';
-import { clamp01, clampPoints, joinPath, relTo, uid } from './util';
+import { VIEW_TYPE, IMG_RE, ANNOT_FILE, FolderData, Rect, Point, TargetRegion } from './types';
+import { clamp01, clampPoints, joinPath, relTo, safeColor, uid } from './util';
+import { emptyAnnotations, type AnnotationRevision } from './annotations';
 import { RenameModal } from './modals';
 import { ScopePickerModal } from './quiz-modals';
 
@@ -35,6 +36,11 @@ export class SlideAndRevealView extends ItemView {
   drawingPaths = new Set<string>();           // rectangle draw mode
   polyDrawingPaths = new Set<string>();        // polygon draw mode
   saveQueued = false;
+  private saveTimer: number | null = null;
+  private saveChain: Promise<void> = Promise.resolve();
+  private annotationRevision: AnnotationRevision | null = null;
+  private saveProblem = '';
+  private annotationEpoch = 0;
 
   /** When non-null, the user is mid-draft of a target region for this cover
    *  (cross-diagram quiz authoring). Routes canvas clicks to addPolyPoint
@@ -84,11 +90,10 @@ export class SlideAndRevealView extends ItemView {
   // keyboard shortcut to know what to remove.
   private selection: { canvas: HTMLElement; file: TFile; rect: Rect; el: HTMLElement } | null = null;
 
-  /** Study mode is view-only: no drag/resize/select/delete/draw/rename.
-   *  Reveal actions (rail, wheel, arrow keys, dblclick-to-toggle) still work.
-   *  Every mutating entry point checks this before proceeding. */
-  private isEditMode(): boolean {
-    return this.plugin.settings.mode === 'edit';
+  /** Editing requires safely loaded annotations and permission in the current mode. */
+  private canEdit(): boolean {
+    return this.annotationRevision !== null && !this.saveProblem &&
+      (this.plugin.settings.mode === 'edit' || this.plugin.settings.allowEditsInStudyMode !== false);
   }
 
   /** Parallel selection for target regions. Lives separately because a
@@ -97,12 +102,10 @@ export class SlideAndRevealView extends ItemView {
     canvas: HTMLElement; file: TFile; cover: Rect; el: HTMLElement;
   } | null = null;
 
-  /** Tracks the most recently-attached body-level mousedown listener used
-   *  by selectShape / selectTargetRegion. We remove it before adding a new
-   *  one — otherwise stale listeners from a previous selection fire on the
-   *  next click and tear down the new toolbar before its buttons' click
-   *  events can fire. */
-  private currentOffClick: ((e: MouseEvent) => void) | null = null;
+  /** One owner for the selected toolbar and all of its listeners. */
+  private selectionCleanup: (() => void) | null = null;
+  private tooltips = new Set<HTMLElement>();
+  private refreshTimer: number | null = null;
 
   // Scope used to claim Escape from Obsidian's keymap whenever this view
   // is the active one. Pushed/popped on active-leaf changes.
@@ -134,6 +137,8 @@ export class SlideAndRevealView extends ItemView {
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
     const s = state as { folderPath?: string };
     if (s && typeof s.folderPath === 'string') {
+      if (this.saveQueued) await this.saveFolderData();
+      await this.saveChain;
       this.folderPath = s.folderPath;
       await this.loadFolderData();
       this.undoStack = [];
@@ -214,34 +219,13 @@ export class SlideAndRevealView extends ItemView {
       });
     }, { passive: false });
 
-    const refresh = (f: TAbstractFile) => {
-      if (f instanceof TFile && IMG_RE.test(f.path)) this.render();
+    const refresh = (file: TAbstractFile) => {
+      if (file instanceof TFile && IMG_RE.test(file.path) && this.containsPath(file.path)) this.queueRefresh();
+      else if (file instanceof TFolder && (this.containsPath(file.path) || this.folderPath.startsWith(file.path + '/'))) this.queueRefresh();
     };
     this.registerEvent(this.app.vault.on('create', refresh));
     this.registerEvent(this.app.vault.on('delete', refresh));
-
-    // Rename: remap folderData keys for images that move within our folder
-    this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => {
-      if (!(file instanceof TFile)) return;
-      const inFolderNow = this.folderPath && (file.path === this.folderPath || file.path.startsWith(this.folderPath + '/'));
-      const wasInFolder = this.folderPath && (oldPath === this.folderPath || oldPath.startsWith(this.folderPath + '/'));
-      if (!inFolderNow && !wasInFolder) return;
-      if (IMG_RE.test(oldPath) || IMG_RE.test(file.path)) {
-        const oldKey = relTo(this.folderPath, oldPath);
-        const newKey = relTo(this.folderPath, file.path);
-        if (oldKey !== newKey) {
-          if (this.folderData.rects[oldKey]) {
-            this.folderData.rects[newKey] = this.folderData.rects[oldKey];
-            delete this.folderData.rects[oldKey];
-          }
-          // Preserve display position by renaming the entry in `order`.
-          const idx = this.folderData.order.indexOf(oldKey);
-          if (idx >= 0) this.folderData.order[idx] = newKey;
-          void this.saveFolderData();
-        }
-        this.render();
-      }
-    }));
+    this.registerEvent(this.app.vault.on('rename', (file: TAbstractFile, oldPath: string) => this.onVaultRename(file, oldPath)));
 
     // Escape needs a CAPTURE-phase listener at the document level — Obsidian
     // registers its own tab-switch handler that fires before our bubble-phase
@@ -265,7 +249,7 @@ export class SlideAndRevealView extends ItemView {
       // text/number field (sec, pair, rename modal, etc.).
       const t = e.target as HTMLElement;
       const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || (t as HTMLElement).isContentEditable);
-      if (!inField && (e.key === 'Delete' || e.key === 'Backspace') && this.isEditMode()) {
+      if (!inField && (e.key === 'Delete' || e.key === 'Backspace') && this.canEdit()) {
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
@@ -338,6 +322,16 @@ export class SlideAndRevealView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    if (this.saveQueued) await this.saveFolderData();
+    await this.saveChain;
+    this.annotationEpoch++;
+    this.annotationRevision = null;
+    this.cancelScheduledSave();
+    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.cancelRectDraft();
+    this.clearSelection();
+    this.clearTooltips();
     this.timers.forEach((t) => window.clearTimeout(t));
     this.timers.clear();
     this.cancelPolyDraft();
@@ -347,71 +341,153 @@ export class SlideAndRevealView extends ItemView {
     }
   }
 
-  annotFilePath(): string { return joinPath(this.folderPath, ANNOT_FILE); }
+  private containsPath(path: string): boolean {
+    return !!this.folderPath && (path === this.folderPath || path.startsWith(this.folderPath + '/'));
+  }
 
-  async loadFolderData(): Promise<void> {
-    this.folderData = { rects: {}, order: [], revealSteps: {} };
-    if (!this.folderPath) return;
-    const newPath = this.annotFilePath();
-    const legacyPath = joinPath(this.folderPath, LEGACY_ANNOT_FILE);
-    // Prefer the new file; fall back to the legacy .image-annotator.json.
-    // First save under the new name will write to ANNOT_FILE; the legacy
-    // file is left in place (user can delete it from Finder if they want).
-    let path = newPath;
-    if (!(await this.app.vault.adapter.exists(newPath))
-        && (await this.app.vault.adapter.exists(legacyPath))) {
-      path = legacyPath;
-    }
-    try {
-      if (await this.app.vault.adapter.exists(path)) {
-        const raw = await this.app.vault.adapter.read(path);
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          if (parsed.rects && typeof parsed.rects === 'object' && Array.isArray(parsed.order)) {
-            // v2 / v2.1 / v2.2 — already in the new shape.
-            this.folderData = {
-              rects: parsed.rects,
-              order: parsed.order,
-              revealSteps: (parsed.revealSteps && typeof parsed.revealSteps === 'object')
-                ? parsed.revealSteps
-                : {},
-              scrollTop: typeof parsed.scrollTop === 'number' ? parsed.scrollTop : 0
-            };
-          } else {
-            // v1 — flat { [relPath]: Rect[] }. Migrate.
-            const rects = parsed as { [k: string]: Rect[] };
-            this.folderData = {
-              rects,
-              order: Object.keys(rects).sort(),
-              revealSteps: {}
-            };
-          }
+  private queueRefresh(): void {
+    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = null;
+      this.render();
+    }, 100);
+  }
+
+  private onVaultRename(file: TAbstractFile, oldPath: string): void {
+    const rebase = (path: string, from = oldPath, to = file.path) =>
+      path === from ? to : path.startsWith(from + '/') ? to + path.slice(from.length) : path;
+    const rootMoved = file instanceof TFolder && (this.folderPath === oldPath || this.folderPath.startsWith(oldPath + '/'));
+    const within = this.containsPath(file.path);
+    const wasWithin = this.containsPath(oldPath);
+    if (!rootMoved && !within && !wasWithin) return;
+    if (!(file instanceof TFolder) && (!(file instanceof TFile) || (!IMG_RE.test(oldPath) && !IMG_RE.test(file.path)))) return;
+
+    if (rootMoved) {
+      this.cancelScheduledSave();
+      this.annotationEpoch++;
+      this.folderPath = rebase(this.folderPath);
+      if (this.annotationRevision) this.annotationRevision = { ...this.annotationRevision, path: rebase(this.annotationRevision.path) };
+      this.plugin.settings.knownFolders = [...new Set(this.plugin.settings.knownFolders.map(path => rebase(path)))];
+      void this.plugin.saveSettings();
+      this.app.workspace.requestSaveLayout();
+    } else if (within && wasWithin) {
+      const oldKey = relTo(this.folderPath, oldPath);
+      const newKey = relTo(this.folderPath, file.path);
+      const remap = (data: FolderData) => {
+        const rects: FolderData['rects'] = Object.create(null);
+        for (const [key, value] of Object.entries(data.rects)) rects[rebase(key, oldKey, newKey)] = value;
+        data.rects = rects;
+        data.order = data.order.map(key => rebase(key, oldKey, newKey));
+        const steps: NonNullable<FolderData['revealSteps']> = Object.create(null);
+        for (const [key, value] of Object.entries(data.revealSteps ?? {})) steps[rebase(key, oldKey, newKey)] = value;
+        data.revealSteps = steps;
+      };
+      remap(this.folderData);
+      if (file instanceof TFolder) {
+        for (const op of [...this.undoStack, ...this.redoStack]) {
+          if (op.type === 'data') { const data = JSON.parse(op.snap) as FolderData; remap(data); op.snap = JSON.stringify(data); }
         }
       }
+    }
+    if (file instanceof TFolder) {
+      for (const op of [...this.undoStack, ...this.redoStack]) {
+        if (op.type === 'rename') { op.oldPath = rebase(op.oldPath); op.newPath = rebase(op.newPath); }
+      }
+    }
+    if (this.activeBlockPath) this.activeBlockPath = rebase(this.activeBlockPath);
+    this.drawingPaths = new Set([...this.drawingPaths].map(path => rebase(path)));
+    this.polyDrawingPaths = new Set([...this.polyDrawingPaths].map(path => rebase(path)));
+    this.scheduleSave();
+    this.queueRefresh();
+  }
+
+  private clearSelection(): void {
+    const cleanup = this.selectionCleanup;
+    this.selectionCleanup = null;
+    cleanup?.();
+    this.selection = null;
+    this.targetSelection = null;
+  }
+
+  private clearTooltips(): void {
+    this.tooltips.forEach(tip => tip.remove());
+    this.tooltips.clear();
+  }
+
+  async loadFolderData(): Promise<void> {
+    this.cancelScheduledSave();
+    const epoch = ++this.annotationEpoch;
+    const folder = this.folderPath;
+    this.annotationRevision = null;
+    this.saveProblem = '';
+    this.folderData = emptyAnnotations();
+    if (!this.folderPath) return;
+    try {
+      const loaded = await this.plugin.annotations.load(folder);
+      if (epoch !== this.annotationEpoch) return;
+      this.folderData = loaded.data;
+      this.annotationRevision = loaded.revision;
+      if (!loaded.valid) this.saveProblem = 'Some annotations are invalid. Saving is paused to preserve the original file.';
     } catch (e) {
-      console.error('Slide and Reveal: failed to load', path, e);
-      new Notice(`Slide and Reveal: couldn't read ${path}`);
+      if (epoch !== this.annotationEpoch) return;
+      console.error('Slide and Reveal: failed to load', folder, e);
+      this.saveProblem = 'Could not load annotations. Saving is paused to preserve the original file.';
+      new Notice(this.saveProblem);
     }
   }
 
   async saveFolderData(): Promise<void> {
-    if (!this.folderPath) return;
-    try {
-      await this.app.vault.adapter.write(this.annotFilePath(), JSON.stringify(this.folderData, null, 2));
-      this.plugin.rememberFolder(this.folderPath);
-    } catch (e) {
-      console.error('Slide and Reveal: failed to save', e);
-      new Notice('Slide and Reveal: save failed (see console)');
-    }
+    this.cancelScheduledSave();
+    if (!this.folderPath || !this.annotationRevision || this.saveProblem) return;
+    const folder = this.folderPath;
+    const epoch = this.annotationEpoch;
+    const raw = JSON.stringify(this.folderData, null, 2);
+    this.saveChain = this.saveChain.then(async () => {
+      if (epoch !== this.annotationEpoch || !this.annotationRevision || this.saveProblem) return;
+      try {
+        const revision = await this.plugin.annotations.save(folder, this.annotationRevision, raw);
+        if (epoch !== this.annotationEpoch) return;
+        this.annotationRevision = revision;
+        this.plugin.rememberFolder(folder);
+      } catch (e) {
+        if (epoch !== this.annotationEpoch) return;
+        console.error('Slide and Reveal: failed to save', e);
+        this.saveProblem = e instanceof Error ? e.message : 'Saving failed. Reload annotations before editing.';
+        new Notice(this.saveProblem + ' Your unsaved changes remain in this view.');
+        this.render();
+      }
+    });
+    await this.saveChain;
   }
 
   scheduleSave(): void {
-    if (this.saveQueued) return;
+    if (this.saveQueued || !this.annotationRevision || this.saveProblem) return;
     this.saveQueued = true;
-    window.setTimeout(async () => {
-      this.saveQueued = false;
+    this.saveTimer = window.setTimeout(async () => {
       await this.saveFolderData();
     }, 250);
+  }
+
+  private cancelScheduledSave(): void {
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    this.saveQueued = false;
+  }
+
+  async pauseAnnotationSaving(message: string): Promise<void> {
+    this.cancelScheduledSave();
+    this.annotationEpoch++;
+    this.saveProblem = message;
+    await this.saveChain;
+    this.render();
+  }
+
+  clearArchivedAnnotations(): void {
+    this.folderData = emptyAnnotations();
+    this.annotationRevision = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.render();
   }
 
   // ---------- Undo / redo ----------
@@ -455,11 +531,13 @@ export class SlideAndRevealView extends ItemView {
     }
   }
   async undo(): Promise<void> {
+    if (!this.canEdit()) return;
     const op = this.undoStack.pop();
     if (!op) { new Notice('Nothing to undo'); return; }
     await this.applyOp(op, 'redoStack');
   }
   async redo(): Promise<void> {
+    if (!this.canEdit()) return;
     const op = this.redoStack.pop();
     if (!op) { new Notice('Nothing to redo'); return; }
     await this.applyOp(op, 'undoStack');
@@ -483,6 +561,15 @@ export class SlideAndRevealView extends ItemView {
     // re-render leaves `rectDraft` pointing at a stale canvas until
     // the next click self-heals it.
     this.cancelRectDraft();
+    if (this.polyDraft) {
+      this.cancelPolyDraft();
+      new Notice('Unfinished polygon cancelled because the view refreshed.');
+    }
+    if (!this.canEdit()) {
+      this.drawingPaths.clear();
+      this.polyDrawingPaths.clear();
+      this.draggingThumbPath = null;
+    }
     // Preserve scroll position across re-renders (every action that
     // calls render() — adding shapes, drawing, deleting, etc. — would
     // otherwise jump back to the top of the content pane). On the
@@ -495,19 +582,17 @@ export class SlideAndRevealView extends ItemView {
     // content pane overflows sideways). Preserve it too, else a re-render
     // yanks the pane back to the left edge.
     const savedScrollLeft = this.scrollerEl ? this.scrollerEl.scrollLeft : 0;
-    // The selection toolbar lives on activeDocument.body (so it can't be
-    // clipped by canvas overflow). Clean up any stragglers before
-    // rebuilding the view. Same for thumbnail tooltips. The selection
-    // pointer goes stale on rebuild (DOM nodes destroyed) — clear it.
-    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
-    activeDocument.body.querySelectorAll('.sNr-tip').forEach((t) => t.remove());
+    // Body-attached overlays belong to this view, including their listeners.
+    this.clearSelection();
+    this.clearTooltips();
     this.selection = null;
+    this.targetSelection = null;
     root.empty();
     root.addClass('sNr-view');
     // Mode class drives view-only CSS (hidden resize/vertex handles,
     // muted selection outline, etc.). Study is the default.
-    root.classList.toggle('sNr-mode-edit', this.isEditMode());
-    root.classList.toggle('sNr-mode-study', !this.isEditMode());
+    root.classList.toggle('sNr-mode-edit', this.canEdit());
+    root.classList.toggle('sNr-mode-study', !this.canEdit());
     root.tabIndex = -1; // make focusable so keydown bubbles up here
 
     const settings = this.plugin.settings;
@@ -523,6 +608,20 @@ export class SlideAndRevealView extends ItemView {
     });
 
     if (!this.folderPath) return;
+
+    if (this.saveProblem) {
+      const warning = header.createDiv({ cls: 'sNr-save-warning' });
+      warning.createEl('p', { text: this.saveProblem });
+      const reload = warning.createEl('button', { text: 'Discard unsaved changes and reload annotations' });
+      reload.onclick = async () => {
+        reload.disabled = true;
+        await this.saveChain;
+        await this.loadFolderData();
+        this.undoStack = [];
+        this.redoStack = [];
+        this.render();
+      };
+    }
 
     const row = header.createDiv({ cls: 'sNr-header-row' });
     this.iconBtn(row, 'eye', 'Reveal all').onclick = () => this.toggleAll(root, true);
@@ -571,10 +670,12 @@ export class SlideAndRevealView extends ItemView {
     const undoBtn = row.createEl('button');
     setIcon(undoBtn, 'undo-2');
     undoBtn.title = 'Undo (⌘Z)';
+    undoBtn.disabled = !this.canEdit();
     undoBtn.onclick = () => this.undo();
     const redoBtn = row.createEl('button');
     setIcon(redoBtn, 'redo-2');
     redoBtn.title = 'Redo (⇧⌘Z)';
+    redoBtn.disabled = !this.canEdit();
     redoBtn.onclick = () => this.redo();
 
     const prevBtn = row.createEl('button');
@@ -768,8 +869,8 @@ export class SlideAndRevealView extends ItemView {
   renderThumb(file: TFile): void {
     const thumb = this.sidebarEl.createDiv({ cls: 'sNr-thumb' });
     thumb.dataset.path = file.path;
-    // Reorder-by-drag is an edit action. Off in study mode.
-    thumb.draggable = this.isEditMode();
+    // Reorder-by-drag follows the editing permission.
+    thumb.draggable = this.canEdit();
     const img = thumb.createEl('img');
     img.src = this.app.vault.getResourcePath(file);
     // Without these the browser uses the inner <img>'s native image-drag,
@@ -786,7 +887,8 @@ export class SlideAndRevealView extends ItemView {
     let tipEl: HTMLElement | null = null;
     const showTip = () => {
       if (tipEl) return;
-      tipEl = activeDocument.body.createDiv({ cls: 'sNr-tip' });
+      tipEl = thumb.ownerDocument.body.createDiv({ cls: 'sNr-tip' });
+      this.tooltips.add(tipEl);
       tipEl.setText(rel);
       const r = thumb.getBoundingClientRect();
       // Place to the right; flip to the left if there isn't room.
@@ -797,7 +899,7 @@ export class SlideAndRevealView extends ItemView {
       tipEl.style.top = (r.top + 4) + 'px';
     };
     const hideTip = () => {
-      if (tipEl) { tipEl.remove(); tipEl = null; }
+      if (tipEl) { this.tooltips.delete(tipEl); tipEl.remove(); tipEl = null; }
     };
     thumb.addEventListener('mouseenter', showTip);
     thumb.addEventListener('mouseleave', hideTip);
@@ -825,6 +927,7 @@ export class SlideAndRevealView extends ItemView {
     // dataTransfer.getData() comes back empty (some browsers / Electron
     // strip text/plain when the drag crosses certain boundaries).
     thumb.addEventListener('dragstart', (e: DragEvent) => {
+      if (!this.canEdit()) { e.preventDefault(); return; }
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = 'move';
         try { e.dataTransfer.setData('text/plain', file.path); } catch { /* ignore */ }
@@ -860,6 +963,7 @@ export class SlideAndRevealView extends ItemView {
       thumb.classList.remove('sNr-drop-above', 'sNr-drop-below');
     });
     thumb.addEventListener('drop', async (e: DragEvent) => {
+      if (!this.canEdit()) return;
       e.preventDefault();
       thumb.classList.remove('sNr-drop-above', 'sNr-drop-below');
       const sourcePath = e.dataTransfer?.getData('text/plain') || this.draggingThumbPath || '';
@@ -953,7 +1057,16 @@ export class SlideAndRevealView extends ItemView {
   }
 
   toggleAll(scopeEl: HTMLElement, reveal: boolean): void {
-    scopeEl.querySelectorAll('.sNr-rect').forEach((r) => r.classList.toggle('sNr-revealed', reveal));
+    scopeEl.querySelectorAll<HTMLElement>('.sNr-block').forEach((block) => {
+      const file = this.app.vault.getAbstractFileByPath(block.dataset.path ?? '');
+      const canvas = block.querySelector<HTMLElement>('.sNr-canvas');
+      if (file instanceof TFile && canvas) this.setImageRevealed(file, canvas, reveal);
+    });
+  }
+
+  private setImageRevealed(file: TFile, canvas: HTMLElement, reveal: boolean): void {
+    const groups = this.computeRevealGroups(file);
+    this.setRevealStep(file, canvas, groups, reveal ? groups.length : 0);
   }
 
   rectsFor(file: TFile): { key: string; list: Rect[] } {
@@ -984,9 +1097,8 @@ export class SlideAndRevealView extends ItemView {
     const top = block.createDiv({ cls: 'sNr-block-top' });
     const titleWrap = top.createDiv({ cls: 'sNr-title-wrap' });
     titleWrap.createEl('h4', { text: relTo(this.folderPath, file.path) });
-    // Rename is an edit action. Skip the pencil entirely in study mode so
-    // there's no accidental vault mutation surface.
-    if (this.isEditMode()) {
+    // Hide rename while study edits are locked.
+    if (this.canEdit()) {
       const renameBtn = titleWrap.createEl('button', { cls: 'sNr-rename-btn' });
       setIcon(renameBtn, 'pencil');
       renameBtn.title = 'Rename file';
@@ -1034,8 +1146,10 @@ export class SlideAndRevealView extends ItemView {
 
     // Reveal-progress rail (vertical slider on the left of the image).
     this.renderRail(railHost, file, canvas);
+    this.bindRevealWheel(file, canvas);
 
     canvas.addEventListener('mousedown', (e: MouseEvent) => {
+      if (!this.canEdit()) return;
       // Rectangle drawing is click-move-click (not click-and-drag), handled
       // in the 'click' listener below. Skip mousedown for that mode so we
       // don't fight the click semantics or eat text selection.
@@ -1060,7 +1174,7 @@ export class SlideAndRevealView extends ItemView {
     // places a corner, mouse-move stretches a semi-transparent preview,
     // second click commits.
     canvas.addEventListener('click', (e: MouseEvent) => {
-      if (!this.drawingPaths.has(file.path)) return;
+      if (!this.canEdit() || !this.drawingPaths.has(file.path)) return;
       if (e.target !== canvas && e.target !== imgEl) return;
       // Ignore clicks that are actually the tail end of a dblclick (which
       // has its own polygon-commit meaning elsewhere).
@@ -1076,6 +1190,7 @@ export class SlideAndRevealView extends ItemView {
 
     // Double-click on canvas (not on rect) commits poly
     canvas.addEventListener('dblclick', (e: MouseEvent) => {
+      if (!this.canEdit()) return;
       if (this.polyDrawingPaths.has(file.path) || (this.targetDraftCoverId && this.polyDraft?.file === file)) {
         e.preventDefault(); e.stopPropagation();
         this.commitPolyDraft();
@@ -1087,6 +1202,7 @@ export class SlideAndRevealView extends ItemView {
   /** First click: place the anchor corner and start a semi-transparent
    *  preview that follows the cursor. */
   private beginRectDraft(canvas: HTMLElement, file: TFile, e: MouseEvent): void {
+    if (!this.canEdit()) return;
     const cb = canvas.getBoundingClientRect();
     const sx = clamp01((e.clientX - cb.left) / cb.width);
     const sy = clamp01((e.clientY - cb.top) / cb.height);
@@ -1117,6 +1233,7 @@ export class SlideAndRevealView extends ItemView {
 
   /** Second click: turn the ghost into a real cover. */
   private async commitRectDraft(e: MouseEvent): Promise<void> {
+    if (!this.canEdit()) return;
     const draft = this.rectDraft;
     if (!draft) return;
     const { canvas, file, sx, sy, ghost, onMove } = draft;
@@ -1161,6 +1278,7 @@ export class SlideAndRevealView extends ItemView {
 
   // ---------- Polygon drafting ----------
   private addPolyPoint(canvas: HTMLElement, file: TFile, block: HTMLElement, e: MouseEvent): void {
+    if (!this.canEdit()) return;
     e.preventDefault();
     const cb = canvas.getBoundingClientRect();
     const x = clamp01((e.clientX - cb.left) / cb.width);
@@ -1183,6 +1301,7 @@ export class SlideAndRevealView extends ItemView {
     }
     this.polyDraft.points.push({ x, y });
     this.repaintPolyDraft();
+    this.refreshHeaderTools();
   }
 
   private repaintPolyDraft(): void {
@@ -1202,12 +1321,14 @@ export class SlideAndRevealView extends ItemView {
 
   cancelPolyDraft(): void {
     if (!this.polyDraft) return;
+    this.polyDraft.block.removeClass('sNr-drafting');
     this.polyDraft.cleanup();
     this.polyDraft = null;
     this.targetDraftCoverId = null;
   }
 
   async commitPolyDraft(): Promise<void> {
+    if (!this.canEdit()) return;
     const draft = this.polyDraft;
     if (!draft) return;
     if (draft.points.length < 3) {
@@ -1269,6 +1390,7 @@ export class SlideAndRevealView extends ItemView {
    *  with destination=target and the target-drafting state flag. Existing
    *  polygon-draw mode (if any) is cancelled. */
   beginTargetRegionDraft(canvas: HTMLElement, file: TFile, block: HTMLElement, coverId: string): void {
+    if (!this.canEdit()) return;
     // Cancel any conflicting state first.
     this.cancelPolyDraft();
     this.polyDrawingPaths.delete(file.path);
@@ -1302,12 +1424,12 @@ export class SlideAndRevealView extends ItemView {
    *  the target region is not a Rect — it's a sub-field of its cover. */
   selectTargetRegion(canvas: HTMLElement, file: TFile, cover: Rect, el: HTMLElement): void {
     if (!cover.targetRegion) return;
-    if (!this.isEditMode()) return;
+    if (!this.canEdit()) return;
     const root = canvas.closest('.sNr-view') as HTMLElement;
     // Clean up any other selections / toolbars.
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     root.querySelectorAll('.sNr-target-region.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
-    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    this.clearSelection();
     root.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
     el.classList.add('sNr-selected');
     this.selection = null; // not a shape selection
@@ -1315,7 +1437,10 @@ export class SlideAndRevealView extends ItemView {
 
     this.renderTargetRegionVertices(canvas, file, cover, el);
 
-    const tb = activeDocument.body.createDiv({ cls: 'sNr-rect-toolbar' });
+    const doc = canvas.ownerDocument;
+    const win = doc.defaultView!;
+    const scroller = this.scrollerEl;
+    const tb = doc.body.createDiv({ cls: 'sNr-rect-toolbar' });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 200;
@@ -1324,18 +1449,19 @@ export class SlideAndRevealView extends ItemView {
       let top = rb.top - tbH - 6;
       if (top < margin) top = rb.bottom + 6;
       let left = rb.left;
-      const maxLeft = window.innerWidth - tbW - margin;
+      const maxLeft = win.innerWidth - tbW - margin;
       if (left > maxLeft) left = maxLeft;
       if (left < margin) left = margin;
       tb.style.top = top + 'px';
       tb.style.left = left + 'px';
     };
-    window.requestAnimationFrame(reposition);
-    this.scrollerEl.addEventListener('scroll', reposition);
-    window.addEventListener('resize', reposition);
+    const frame = win.requestAnimationFrame(reposition);
+    scroller.addEventListener('scroll', reposition);
+    win.addEventListener('resize', reposition);
     const detachReposition = () => {
-      this.scrollerEl.removeEventListener('scroll', reposition);
-      window.removeEventListener('resize', reposition);
+      win.cancelAnimationFrame(frame);
+      scroller.removeEventListener('scroll', reposition);
+      win.removeEventListener('resize', reposition);
     };
 
     const labelText = cover.pair > 0 ? `Target #${cover.pair}` : 'Target (unpaired)';
@@ -1347,38 +1473,35 @@ export class SlideAndRevealView extends ItemView {
     del.title = 'Delete target region (cover stays; this label leaves the quiz pool)';
     del.onclick = async (e) => {
       e.stopPropagation();
-      tb.remove();
-      detachReposition();
+      this.clearSelection();
       await this.removeTargetRegion(file, cover.id);
     };
 
-    if (this.currentOffClick) {
-      activeDocument.removeEventListener('mousedown', this.currentOffClick, true);
-      this.currentOffClick = null;
-    }
     const offClick = (ev: MouseEvent) => {
       const target = ev.target as Element | null;
       if (!target) return;
       if (tb.contains(target) || el.contains(target)) return;
       if (target.closest && target.closest('.sNr-vertex')) return;
+      this.clearSelection();
+    };
+    this.selectionCleanup = () => {
       tb.remove();
       el.classList.remove('sNr-selected');
       canvas.querySelectorAll('.sNr-vertex[data-target-cover-id]').forEach((v) => v.remove());
       detachReposition();
       this.targetSelection = null;
-      activeDocument.removeEventListener('mousedown', offClick, true);
-      if (this.currentOffClick === offClick) this.currentOffClick = null;
+      doc.removeEventListener('mousedown', offClick, true);
     };
-    this.currentOffClick = offClick;
-    activeDocument.addEventListener('mousedown', offClick, true);
+    doc.addEventListener('mousedown', offClick, true);
   }
 
   /** Delete the currently-selected target region (Del/Backspace path). */
   async deleteSelectedTargetRegion(): Promise<void> {
+    if (!this.canEdit()) return;
     const sel = this.targetSelection;
     if (!sel) return;
     this.targetSelection = null;
-    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    this.clearSelection();
     await this.removeTargetRegion(sel.file, sel.cover.id);
   }
 
@@ -1403,11 +1526,13 @@ export class SlideAndRevealView extends ItemView {
       v.style.top = (cy * 100) + '%';
 
       v.addEventListener('mousedown', (e: MouseEvent) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         const cb = canvas.getBoundingClientRect();
         this.snapshot();
         const move = (mv: MouseEvent) => {
+        if (!this.canEdit()) return;
           const nx = clamp01((mv.clientX - cb.left) / cb.width);
           const ny = clamp01((mv.clientY - cb.top) / cb.height);
           v.style.left = (nx * 100) + '%';
@@ -1437,6 +1562,7 @@ export class SlideAndRevealView extends ItemView {
 
       // Right-click vertex to delete (min 3).
       v.addEventListener('contextmenu', async (e: MouseEvent) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         if (tr.points.length <= 3) {
@@ -1494,6 +1620,7 @@ export class SlideAndRevealView extends ItemView {
 
   /** Remove a target region from a cover (undoable). */
   async removeTargetRegion(file: TFile, coverId: string): Promise<void> {
+    if (!this.canEdit()) return;
     const { list } = this.rectsFor(file);
     const cover = list.find((r) => r.id === coverId);
     if (!cover || !cover.targetRegion) return;
@@ -1519,7 +1646,7 @@ export class SlideAndRevealView extends ItemView {
     wrap.style.top = (tr.y * 100) + '%';
     wrap.style.width = (tr.w * 100) + '%';
     wrap.style.height = (tr.h * 100) + '%';
-    wrap.style.setProperty('--sNr-color', cover.color || this.plugin.settings.defaultColor);
+    wrap.style.setProperty('--sNr-color', safeColor(cover.color || this.plugin.settings.defaultColor));
 
     const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 100 100');
@@ -1551,8 +1678,8 @@ export class SlideAndRevealView extends ItemView {
       // Don't start drags from vertex handles — they have their own logic.
       if ((e.target as HTMLElement).classList.contains('sNr-vertex')) return;
       if (!cover.targetRegion) return;
-      // Study mode is view-only — no drag.
-      if (!this.isEditMode()) return;
+      // When study edits are locked — no drag.
+      if (!this.canEdit()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1561,6 +1688,7 @@ export class SlideAndRevealView extends ItemView {
       const ox = tr.x, oy = tr.y;
       let snapped = false;
       const move = (mv: MouseEvent) => {
+        if (!this.canEdit()) return;
         const dx = (mv.clientX - startX) / cb.width;
         const dy = (mv.clientY - startY) / cb.height;
         // Only take a snapshot once we've actually moved — pure clicks
@@ -1601,7 +1729,7 @@ export class SlideAndRevealView extends ItemView {
     connectorSvg.dataset.coverId = cover.id;
     connectorSvg.setAttribute('viewBox', '0 0 100 100');
     connectorSvg.setAttribute('preserveAspectRatio', 'none');
-    connectorSvg.style.setProperty('--sNr-color', cover.color || this.plugin.settings.defaultColor);
+    connectorSvg.style.setProperty('--sNr-color', safeColor(cover.color || this.plugin.settings.defaultColor));
     const lineEl = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
     connectorSvg.appendChild(lineEl);
     canvas.appendChild(connectorSvg);
@@ -1617,7 +1745,7 @@ export class SlideAndRevealView extends ItemView {
     el.style.top = (rect.y * 100) + '%';
     el.style.width = (rect.w * 100) + '%';
     el.style.height = (rect.h * 100) + '%';
-    el.style.setProperty('--sNr-color', rect.color || this.plugin.settings.defaultColor);
+    el.style.setProperty('--sNr-color', safeColor(rect.color || this.plugin.settings.defaultColor));
     el.dataset.id = rect.id;
     el.dataset.pair = String(rect.pair || 0);
 
@@ -1655,14 +1783,15 @@ export class SlideAndRevealView extends ItemView {
       const e = ev as MouseEvent;
       if (e.target === handle) return;
       if (this.drawingPaths.has(file.path) || this.polyDrawingPaths.has(file.path)) return;
-      // Study mode is view-only — don't move covers around.
-      if (!this.isEditMode()) return;
+      // When study edits are locked — don't move covers around.
+      if (!this.canEdit()) return;
       e.preventDefault();
       const cb = canvas.getBoundingClientRect();
       const startX = e.clientX, startY = e.clientY;
       const ox = rect.x, oy = rect.y;
       this.snapshot();
       const move = (mv: MouseEvent) => {
+        if (!this.canEdit()) return;
         const dx = (mv.clientX - startX) / cb.width;
         const dy = (mv.clientY - startY) / cb.height;
         rect.x = clamp01(Math.min(1 - rect.w, Math.max(0, ox + dx)));
@@ -1685,8 +1814,8 @@ export class SlideAndRevealView extends ItemView {
 
     // Resize handle (works for rect AND polygon — scales bbox; polygon points are local 0..1, so they auto-scale)
     handle.addEventListener('mousedown', (e: MouseEvent) => {
-      // Study mode is view-only — no resizing.
-      if (!this.isEditMode()) return;
+      // When study edits are locked — no resizing.
+      if (!this.canEdit()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1694,6 +1823,7 @@ export class SlideAndRevealView extends ItemView {
       const ow = rect.w, oh = rect.h;
       this.snapshot();
       const move = (ev: MouseEvent) => {
+        if (!this.canEdit()) return;
         const dx = (ev.clientX - startX) / cb.width;
         const dy = (ev.clientY - startY) / cb.height;
         rect.w = clamp01(Math.max(0.01, Math.min(1 - rect.x, ow + dx)));
@@ -1862,7 +1992,10 @@ export class SlideAndRevealView extends ItemView {
       if (e.target === thumb) return; // thumb has its own listener
       beginScrub(e);
     });
+  }
 
+  /** Bind once per canvas; rebuilding the rail must not multiply wheel steps. */
+  private bindRevealWheel(file: TFile, canvas: HTMLElement): void {
     // Mouse-wheel inside the canvas advances/retreats the slider one step
     // at a time. Outside the canvas (the gap between blocks, the sidebar,
     // the header) wheel events are NOT intercepted, so the user can scroll
@@ -1894,6 +2027,13 @@ export class SlideAndRevealView extends ItemView {
       while (accum >= STEP) { accum -= STEP; this.bumpRevealStep(file, canvas, +1); }
       while (accum <= -STEP) { accum += STEP; this.bumpRevealStep(file, canvas, -1); }
     }, { passive: false });
+  }
+
+  private refreshRevealRail(file: TFile, canvas: HTMLElement): void {
+    const host = canvas.closest('.sNr-block')?.querySelector<HTMLElement>('.sNr-rail-host');
+    if (!host) return;
+    host.empty();
+    this.renderRail(host, file, canvas);
   }
 
   togglePair(canvas: HTMLElement, rect: Rect, reveal: boolean): void {
@@ -1940,6 +2080,7 @@ export class SlideAndRevealView extends ItemView {
   }
 
   applyColor(canvas: HTMLElement, file: TFile, rect: Rect, newColor: string): void {
+    if (!this.canEdit()) return;
     rect.color = newColor;
     const ownEl = canvas.querySelector(`.sNr-rect[data-id="${rect.id}"]`) as HTMLElement | null;
     if (ownEl) ownEl.style.setProperty('--sNr-color', newColor);
@@ -2006,11 +2147,13 @@ export class SlideAndRevealView extends ItemView {
       v.style.top = (cy * 100) + '%';
 
       v.addEventListener('mousedown', (e: MouseEvent) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         const cb = canvas.getBoundingClientRect();
         this.snapshot();
         const move = (mv: MouseEvent) => {
+        if (!this.canEdit()) return;
           const nx = clamp01((mv.clientX - cb.left) / cb.width);
           const ny = clamp01((mv.clientY - cb.top) / cb.height);
           v.style.left = (nx * 100) + '%';
@@ -2040,6 +2183,7 @@ export class SlideAndRevealView extends ItemView {
 
       // Right-click a vertex to delete it (if more than 3 remain)
       v.addEventListener('contextmenu', async (e: MouseEvent) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         if (!rect.points || rect.points.length <= 3) {
@@ -2097,18 +2241,16 @@ export class SlideAndRevealView extends ItemView {
       }
     }
 
-    // Drawing controls only make sense in edit mode. In study mode we
-    // still show them so the toolbar layout doesn't shift, but disable
-    // clicks and explain why via tooltip.
-    const editMode = this.isEditMode();
+    // Keep drawing controls visible when edits are locked, with an explanation.
+    const editMode = this.canEdit();
     const drawBtn = this.iconBtn(tools, 'square', 'Rectangle');
     drawBtn.title = editMode
       ? 'Add rectangle to the focused image (click a corner, move, click again)'
-      : 'Drawing is disabled in study mode. Switch to edit mode in settings.';
+      : 'Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.';
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass('sNr-active');
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
-      if (!file) return;
+      if (!file || !this.canEdit()) return;
       if (this.drawingPaths.has(file.path)) {
         this.drawingPaths.delete(file.path);
         // Leaving draw mode mid-draft — drop the ghost.
@@ -2123,11 +2265,11 @@ export class SlideAndRevealView extends ItemView {
     const polyBtn = this.iconBtn(tools, 'pentagon', 'Polygon');
     polyBtn.title = editMode
       ? 'Add polygon to the focused image (click vertices, then Finalize)'
-      : 'Drawing is disabled in study mode. Switch to edit mode in settings.';
+      : 'Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.';
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass('sNr-active');
     if (!file || !editMode) polyBtn.disabled = true;
     polyBtn.onclick = () => {
-      if (!file) return;
+      if (!file || !this.canEdit()) return;
       if (this.polyDrawingPaths.has(file.path)) {
         this.polyDrawingPaths.delete(file.path);
         this.cancelPolyDraft();
@@ -2182,14 +2324,14 @@ export class SlideAndRevealView extends ItemView {
     if (!ctx) revealBtn.disabled = true;
     revealBtn.onclick = () => {
       if (!ctx) return;
-      ctx.canvas.querySelectorAll('.sNr-rect').forEach((r) => r.classList.add('sNr-revealed'));
+      this.setImageRevealed(ctx.file, ctx.canvas, true);
     };
     const hideBtn = this.iconBtn(tools, 'eye-off', 'Hide');
     hideBtn.title = 'Hide all shapes on the focused image';
     if (!ctx) hideBtn.disabled = true;
     hideBtn.onclick = () => {
       if (!ctx) return;
-      ctx.canvas.querySelectorAll('.sNr-rect').forEach((r) => r.classList.remove('sNr-revealed'));
+      this.setImageRevealed(ctx.file, ctx.canvas, false);
     };
   }
 
@@ -2269,6 +2411,7 @@ export class SlideAndRevealView extends ItemView {
   /** Delete the currently-selected shape (called by Del/Backspace and the
    *  toolbar trash button). Snapshots first so it's undoable. */
   async deleteSelectedShape(): Promise<void> {
+    if (!this.canEdit()) return;
     const sel = this.selection;
     if (!sel) return;
     this.snapshot();
@@ -2313,12 +2456,12 @@ export class SlideAndRevealView extends ItemView {
 
   // ---------- Floating per-rect toolbar ----------
   selectShape(canvas: HTMLElement, file: TFile, rect: Rect, el: HTMLElement): void {
-    if (!this.isEditMode()) return;
+    if (!this.canEdit()) return;
     const root = canvas.closest('.sNr-view') as HTMLElement;
     root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     root.querySelectorAll('.sNr-target-region.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
     // The toolbar is body-attached (position: fixed), so clean up there.
-    activeDocument.body.querySelectorAll('.sNr-rect-toolbar').forEach((t) => t.remove());
+    this.clearSelection();
     root.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
     el.classList.add('sNr-selected');
     this.selection = { canvas, file, rect, el };
@@ -2326,7 +2469,10 @@ export class SlideAndRevealView extends ItemView {
 
     if (rect.kind === 'polygon') this.renderPolyVertices(canvas, file, rect, el);
 
-    const tb = activeDocument.body.createDiv({ cls: 'sNr-rect-toolbar' });
+    const doc = canvas.ownerDocument;
+    const win = doc.defaultView!;
+    const scroller = this.scrollerEl;
+    const tb = doc.body.createDiv({ cls: 'sNr-rect-toolbar' });
     // Position is computed from el.getBoundingClientRect() and clamped to
     // the viewport, so toolbars near the right/bottom edge stay visible.
     const reposition = () => {
@@ -2339,19 +2485,20 @@ export class SlideAndRevealView extends ItemView {
       if (top < margin) top = rb.bottom + 6;
       // Prefer left-aligned with the rect; clamp into viewport.
       let left = rb.left;
-      const maxLeft = window.innerWidth - tbW - margin;
+      const maxLeft = win.innerWidth - tbW - margin;
       if (left > maxLeft) left = maxLeft;
       if (left < margin) left = margin;
       tb.style.top = top + 'px';
       tb.style.left = left + 'px';
     };
     // Defer first reposition so offsetWidth/Height reflect actual content.
-    window.requestAnimationFrame(reposition);
-    this.scrollerEl.addEventListener('scroll', reposition);
-    window.addEventListener('resize', reposition);
+    const frame = win.requestAnimationFrame(reposition);
+    scroller.addEventListener('scroll', reposition);
+    win.addEventListener('resize', reposition);
     const detachReposition = () => {
-      this.scrollerEl.removeEventListener('scroll', reposition);
-      window.removeEventListener('resize', reposition);
+      win.cancelAnimationFrame(frame);
+      scroller.removeEventListener('scroll', reposition);
+      win.removeEventListener('resize', reposition);
     };
 
     const bToggle = tb.createEl('button', { cls: 'sNr-tb-icon-btn' });
@@ -2417,6 +2564,7 @@ export class SlideAndRevealView extends ItemView {
     sec.min = '0'; sec.step = '0.5';
     this.attachStepperButtons(secWrap, sec);
     sec.onchange = async () => {
+      if (!this.canEdit()) return;
       this.snapshot();
       const v = parseFloat(sec.value);
       rect.seconds = isFinite(v) && v > 0 ? v : 0;
@@ -2433,6 +2581,7 @@ export class SlideAndRevealView extends ItemView {
     pair.title = 'Pair number (0 = unpaired). Shapes sharing a pair number reveal/hide together.';
     this.attachStepperButtons(pairWrap, pair);
     pair.onchange = async () => {
+      if (!this.canEdit()) return;
       this.snapshot();
       const v = parseInt(pair.value, 10);
       rect.pair = isFinite(v) && v > 0 ? v : 0;
@@ -2452,6 +2601,9 @@ export class SlideAndRevealView extends ItemView {
           el.style.setProperty('--sNr-color', leader.color);
         }
       }
+      // Rebuild only this image's rail, retaining the selected shape and toolbar.
+      // renderRail also clamps saved progress when merging pairs reduces the total.
+      this.refreshRevealRail(file, canvas);
       await this.saveFolderData();
     };
 
@@ -2470,6 +2622,7 @@ export class SlideAndRevealView extends ItemView {
     setIcon(insertBtn, 'list-plus');
     insertBtn.title = 'Shift every OTHER shape with pair ≥ the entered value up by 1 (the current shape keeps its number).';
     insertBtn.onclick = async (e) => {
+      if (!this.canEdit()) return;
       e.stopPropagation();
       const target = parseInt(pair.value, 10);
       if (!isFinite(target) || target <= 0) {
@@ -2505,13 +2658,14 @@ export class SlideAndRevealView extends ItemView {
     // .click(). This avoids browser-specific oval swatch rendering.
     const colorWrap = tb.createSpan({ cls: 'sNr-color-wrap' });
     const colorBtn = colorWrap.createDiv({ cls: 'sNr-color-btn' });
-    colorBtn.style.background = rect.color || this.plugin.settings.defaultColor;
+    colorBtn.style.background = safeColor(rect.color || this.plugin.settings.defaultColor);
     colorBtn.title = 'Pick color';
     const colorInput = colorWrap.createEl('input', { type: 'color' });
-    colorInput.value = rect.color || this.plugin.settings.defaultColor;
+    colorInput.value = safeColor(rect.color || this.plugin.settings.defaultColor);
     colorBtn.onclick = (e) => { e.stopPropagation(); colorInput.click(); };
     let colorSnapshotted = false;
     colorInput.oninput = () => {
+      if (!this.canEdit()) return;
       if (!colorSnapshotted) { this.snapshot(); colorSnapshotted = true; }
       this.applyColor(canvas, file, rect, colorInput.value);
       colorBtn.style.background = colorInput.value;
@@ -2562,14 +2716,7 @@ export class SlideAndRevealView extends ItemView {
     del.title = 'Delete shape (Del / Backspace)';
     del.onclick = (e) => { e.stopPropagation(); this.deleteSelectedShape(); };
 
-    // Replace any previously-attached offClick listener before adding the
-    // new one. A stale offClick from a prior selection (with its own
-    // captured `tb` / `el`) would otherwise fire here and remove the new
-    // toolbar before its buttons' click handlers can run.
-    if (this.currentOffClick) {
-      activeDocument.removeEventListener('mousedown', this.currentOffClick, true);
-      this.currentOffClick = null;
-    }
+    // clearSelection removes this handler together with the positioning listeners.
     const offClick = (ev: MouseEvent) => {
       const target = ev.target as Element | null;
       if (!target) return;
@@ -2577,21 +2724,24 @@ export class SlideAndRevealView extends ItemView {
       // or any of its vertex handles.
       if (tb.contains(target) || el.contains(target)) return;
       if (target.closest && target.closest('.sNr-vertex')) return;
+      this.clearSelection();
+    };
+    this.selectionCleanup = () => {
       tb.remove();
       el.classList.remove('sNr-selected');
       canvas.querySelectorAll('.sNr-vertex').forEach((v) => v.remove());
       detachReposition();
       this.selection = null;
-      activeDocument.removeEventListener('mousedown', offClick, true);
-      if (this.currentOffClick === offClick) this.currentOffClick = null;
+      doc.removeEventListener('mousedown', offClick, true);
     };
-    this.currentOffClick = offClick;
-    activeDocument.addEventListener('mousedown', offClick, true);
+    doc.addEventListener('mousedown', offClick, true);
   }
 
   // ---------- File rename ----------
   renameFile(file: TFile): void {
+    if (!this.canEdit()) return;
     new RenameModal(this.app, file.name, async (newName) => {
+      if (!this.canEdit()) return;
       const parent = file.parent ? file.parent.path : '';
       const newPath = parent ? `${parent}/${newName}` : newName;
       const oldPath = file.path;

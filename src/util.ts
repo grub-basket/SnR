@@ -1,4 +1,9 @@
 export function uid(): string { return Math.random().toString(36).slice(2, 9); }
+/** Annotation files are shareable: never allow CSS image URLs in a color field. */
+export function safeColor(value: unknown): string {
+  return typeof value === 'string' && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(value)
+    ? value : '#3b82f6';
+}
 export function clamp01(v: number): number { return Math.max(0, Math.min(1, v)); }
 
 /** Render-time defense: a single polygon with tens of thousands of points

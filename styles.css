@@ -598,6 +598,17 @@
   user-select: none;
   pointer-events: none;
 }
+/* Concealer overlay layer inside a quiz crop. Positioned to the image via
+ * per-instance left/top/width/height set in JS (dynamic geometry). */
+.sNr-quiz-crop-masks {
+  position: absolute;
+  pointer-events: none;
+}
+/* Hide the crop until its concealers are rendered, so a label can never
+ * flash before it's covered. Removed once masks are in place. */
+.sNr-quiz-crop-loading {
+  visibility: hidden;
+}
 .sNr-quiz-controls {
   display: flex; gap: 8px; justify-content: center;
   margin-top: 14px;

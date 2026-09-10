@@ -100,6 +100,11 @@ A few words you'll see throughout the plugin:
 
 ## Study mode (in-place reveal)
 
+Study mode allows edits by default. Turn off **Allow edits in Study mode**
+in settings to lock covers, target regions, image names and image order.
+Revealing, navigation and saved study progress remain available. Edit mode
+always permits edits, provided annotations loaded safely.
+
 ### Drawing
 
 - Click **Rectangle** in the header, then drag on the focused image to
@@ -288,9 +293,10 @@ Open via **Settings → Community plugins → Slide and Reveal → ⚙️**.
 | **Left/right arrows zoom** | on | Toggle, with a configurable step (default 5%). |
 | **Up/down arrows reveal** | on | Toggle, with an invert flag. In *study* mode this is always on regardless of the toggle (which then only governs edit mode). |
 | **Mouse-wheel sensitivity** | 60 px / step | Bump up if a gaming mouse on Windows fires huge wheel deltas per click. |
+| **Allow edits in Study mode** | on | Turn off to lock annotation edits while retaining reveal controls and saved progress. |
 | **Mode** | `study` | `study` = wheel inside the image steps the reveal rail. `edit` = wheel is hands-off (you scroll, you draw, you don't fat-finger a cover open). |
 | **Wheel-step past 100%** | off | Past 100% zoom, wheel normally passes through to vertical scroll (so you can pan the wider image). Turn this on to keep wheel stepping the rail even when zoomed. |
-| **Folders using Slide and Reveal** | — | List of tracked folders with one-click *open*, *remove from list*, or *delete annotation file*. |
+| **Folders using Slide and Reveal** | — | List of tracked folders with one-click *open*, *remove from list*, or *archive annotations* (original files are retained as backups). |
 | **Discovered folders** | — | Vault scan turns up folders that already have an annotation file (e.g. synced in from another device) but aren't tracked here yet. One-click to add. |
 
 ## Data files and portability
@@ -329,9 +335,9 @@ pnpm run typecheck    # tsc --noEmit
 ```
 
 The build copies `main.js + manifest.json + styles.css` to
-`$PLUGIN_DIR` (defaults to the hardcoded `Plugin Test` vault path in
-`esbuild.config.mjs`). Override with `PLUGIN_DIR=...` to deploy
-elsewhere.
+`$PLUGIN_DIR` (defaults to a local dev-vault plugin path set in
+`esbuild.config.mjs`). Override with `PLUGIN_DIR=...` to deploy to your
+own vault.
 
 The `obsidian` package and `node_modules` are externalized — the
 shipped `main.js` is plain plugin code only.
@@ -382,6 +388,8 @@ If you want a deeper tour, `CLAUDE.md` in the repo has the running
 architecture notes used during development.
 
 ## Authors
+
+- **Codex (GPT-6)** — annotation safety, lifecycle and quiz fixes, reveal-state consistency, and the optional Study editing lock in 0.5.17.
 
 - **Human** — designed it, drove every requirement, tested every
   iteration, named it. The plugin exists because there wasn't a good

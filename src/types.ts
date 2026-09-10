@@ -85,6 +85,8 @@ export interface SlideAndRevealSettings {
    *  'edit' = wheel is left alone (you scroll, you draw, you stay
    *  out of memorization mode). */
   mode: 'study' | 'edit';
+  /** Allow annotation edits while retaining Study mode's reveal controls. */
+  allowEditsInStudyMode: boolean;
   /** When zoom is past 100% the wheel normally passes through to
    *  native scroll (so you can see the wider image). Turn this on
    *  to keep wheel-steps active even when zoomed past 100%
@@ -106,5 +108,6 @@ export const DEFAULT_SETTINGS: SlideAndRevealSettings = {
   arrowKeysRevealInverted: false,
   wheelStepThreshold: 60,
   mode: 'study',
+  allowEditsInStudyMode: true,
   wheelStepPast100: false
 };

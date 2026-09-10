@@ -44,6 +44,7 @@ var DEFAULT_SETTINGS = {
   arrowKeysRevealInverted: false,
   wheelStepThreshold: 60,
   mode: "study",
+  allowEditsInStudyMode: true,
   wheelStepPast100: false
 };
 
@@ -53,6 +54,9 @@ var import_obsidian4 = require("obsidian");
 // src/util.ts
 function uid() {
   return Math.random().toString(36).slice(2, 9);
+}
+function safeColor(value) {
+  return typeof value === "string" && /^#(?:[\da-f]{3}|[\da-f]{6})$/i.test(value) ? value : "#3b82f6";
 }
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
@@ -68,6 +72,124 @@ function relTo(folder, fullPath) {
   if (!folder) return fullPath;
   return fullPath.startsWith(folder + "/") ? fullPath.slice(folder.length + 1) : fullPath;
 }
+
+// src/annotations.ts
+var record = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+var finite = (v) => typeof v === "number" && Number.isFinite(v);
+var fraction = (v) => finite(v) && v >= 0 && v <= 1;
+var points = (v) => Array.isArray(v) && v.length >= 3 && v.every((p) => record(p) && fraction(p.x) && fraction(p.y));
+var box = (v) => fraction(v.x) && fraction(v.y) && fraction(v.w) && v.w > 0 && fraction(v.h) && v.h > 0;
+var relativePath = (v) => typeof v === "string" && !!v && !v.startsWith("/") && !v.includes("\\") && !v.split("/").some((p) => p === ".." || p === "." || !p);
+function emptyAnnotations() {
+  return { rects: /* @__PURE__ */ Object.create(null), order: [], revealSteps: /* @__PURE__ */ Object.create(null) };
+}
+function parseAnnotations(raw) {
+  var _a, _b;
+  const parsed = JSON.parse(raw);
+  if (!record(parsed)) throw new Error("Invalid annotation document");
+  const modern = "rects" in parsed || "order" in parsed;
+  const source = modern ? parsed.rects : parsed;
+  if (!record(source) || modern && !Array.isArray(parsed.order)) throw new Error("Invalid annotation document");
+  const data = emptyAnnotations();
+  let valid = true;
+  for (const [path, entries] of Object.entries(source)) {
+    if (!relativePath(path) || !Array.isArray(entries)) {
+      valid = false;
+      continue;
+    }
+    const covers = [];
+    const ids = /* @__PURE__ */ new Set();
+    for (const value of entries) {
+      if (!record(value) || typeof value.id !== "string" || !value.id || ids.has(value.id) || !box(value) || value.kind !== void 0 && value.kind !== "rect" && value.kind !== "polygon" || value.kind === "polygon" && !points(value.points)) {
+        valid = false;
+        continue;
+      }
+      ids.add(value.id);
+      const cover = { ...value, color: safeColor(value.color), pair: 0, seconds: 0 };
+      if (value.pair !== void 0 && (!finite(value.pair) || value.pair < 0 || !Number.isInteger(value.pair))) valid = false;
+      else cover.pair = (_a = value.pair) != null ? _a : 0;
+      if (value.seconds !== void 0 && (!finite(value.seconds) || value.seconds < 0)) valid = false;
+      else cover.seconds = (_b = value.seconds) != null ? _b : 0;
+      if (value.targetRegion !== void 0 && (!record(value.targetRegion) || !box(value.targetRegion) || !points(value.targetRegion.points))) {
+        delete cover.targetRegion;
+        valid = false;
+      }
+      if (value.aliases !== void 0 && (!Array.isArray(value.aliases) || !value.aliases.every((a) => typeof a === "string"))) {
+        delete cover.aliases;
+        valid = false;
+      }
+      covers.push(cover);
+    }
+    data.rects[path] = covers;
+  }
+  const order = modern ? parsed.order : Object.keys(data.rects).sort();
+  data.order = [...new Set(order.filter(relativePath))];
+  if (data.order.length !== order.length) valid = false;
+  if (modern && parsed.revealSteps !== void 0) {
+    if (!record(parsed.revealSteps)) valid = false;
+    else for (const [path, step] of Object.entries(parsed.revealSteps)) {
+      if (relativePath(path) && finite(step) && Number.isInteger(step) && step >= 0) data.revealSteps[path] = step;
+      else valid = false;
+    }
+  }
+  if (modern && parsed.scrollTop !== void 0) {
+    if (finite(parsed.scrollTop) && parsed.scrollTop >= 0) data.scrollTop = parsed.scrollTop;
+    else valid = false;
+  }
+  return { data, valid };
+}
+async function readAnnotationRevision(adapter, folder) {
+  for (const name of [ANNOT_FILE, LEGACY_ANNOT_FILE]) {
+    const path = joinPath(folder, name);
+    if (await adapter.exists(path)) return { path, raw: await adapter.read(path) };
+  }
+  return { path: joinPath(folder, ANNOT_FILE), raw: null };
+}
+var AnnotationStore = class {
+  constructor(adapter) {
+    this.adapter = adapter;
+    this.queues = /* @__PURE__ */ new Map();
+  }
+  run(folder, action) {
+    var _a;
+    const previous = (_a = this.queues.get(folder)) != null ? _a : Promise.resolve();
+    const next = previous.catch(() => {
+    }).then(action);
+    this.queues.set(folder, next);
+    void next.finally(() => {
+      if (this.queues.get(folder) === next) this.queues.delete(folder);
+    }).catch(() => {
+    });
+    return next;
+  }
+  load(folder) {
+    return this.run(folder, async () => {
+      const revision = await readAnnotationRevision(this.adapter, folder);
+      return { revision, ...revision.raw === null ? { data: emptyAnnotations(), valid: true } : parseAnnotations(revision.raw) };
+    });
+  }
+  save(folder, expected, raw) {
+    return this.run(folder, async () => {
+      const current = await readAnnotationRevision(this.adapter, folder);
+      if (current.path !== expected.path || current.raw !== expected.raw) {
+        throw new Error("Annotations changed on disk or in another view. Saving is paused to protect those changes.");
+      }
+      const path = joinPath(folder, ANNOT_FILE);
+      await this.adapter.write(path, raw);
+      return { path, raw };
+    });
+  }
+  /** Preserve both generations, so a legacy file cannot silently resurrect covers. */
+  archive(folder) {
+    return this.run(folder, async () => {
+      const suffix = `.backup-${Date.now()}-${uid()}`;
+      for (const name of [ANNOT_FILE, LEGACY_ANNOT_FILE]) {
+        const path = joinPath(folder, name);
+        if (await this.adapter.exists(path)) await this.adapter.rename(path, path + suffix);
+      }
+    });
+  }
+};
 
 // src/modals.ts
 var import_obsidian = require("obsidian");
@@ -131,18 +253,16 @@ var import_obsidian3 = require("obsidian");
 // src/quiz.ts
 var import_obsidian2 = require("obsidian");
 async function loadFolderData(app, folder) {
-  const adapter = app.vault.adapter;
-  for (const name of [ANNOT_FILE, LEGACY_ANNOT_FILE]) {
-    const path = joinPath(folder, name);
-    try {
-      if (!await adapter.exists(path)) continue;
-      const raw = await adapter.read(path);
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch (e) {
-    }
+  try {
+    const { raw } = await readAnnotationRevision(app.vault.adapter, folder);
+    if (raw === null) return null;
+    const { data, valid } = parseAnnotations(raw);
+    if (!valid) new import_obsidian2.Notice(`Some invalid annotations in ${folder} were skipped for this quiz.`);
+    return data;
+  } catch (e) {
+    new import_obsidian2.Notice(`Couldn't read annotations in ${folder}.`);
+    return null;
   }
-  return null;
 }
 async function buildQuizPool(app, scope) {
   var _a;
@@ -435,7 +555,7 @@ var QuizModal = class extends import_obsidian3.Modal {
       h: item.cover.h
     };
     if (this.viewMode === "cropped") {
-      this.renderCroppedRegion(wrap, item, coverRegion);
+      this.renderCroppedRegion(wrap, item, coverRegion, true);
     } else {
       this.renderFullWithOutline(
         wrap,
@@ -455,22 +575,41 @@ var QuizModal = class extends import_obsidian3.Modal {
    *  so the cropped view has some breathing room — text near the edge of
    *  a tight cover bbox would otherwise touch the crop boundary and feel
    *  cut off even though it's technically inside. */
-  renderCroppedRegion(parent, item, region) {
+  renderCroppedRegion(parent, item, region, showAnswer = false) {
     const tFile = getImage(this.app, item.imagePath);
     if (!tFile) {
       parent.createDiv({ text: "Image missing: " + item.imagePath });
       return;
     }
     const cropBox = parent.createDiv({ cls: "sNr-quiz-crop" });
+    cropBox.addClass("sNr-quiz-crop-loading");
     const img = cropBox.createEl("img");
+    const masks = cropBox.createDiv({ cls: "sNr-quiz-crop-masks" });
     const PAD = 0.12;
     const padX = region.w * PAD;
     const padY = region.h * PAD;
     const x = Math.max(0, region.x - padX);
     const y = Math.max(0, region.y - padY);
-    const w = Math.min(1 - x, region.w + 2 * padX);
-    const h = Math.min(1 - y, region.h + 2 * padY);
-    const applyOnReady = () => this.applyCrop(cropBox, img, x, y, w, h);
+    const w = Math.min(1, region.x + region.w + padX) - x;
+    const h = Math.min(1, region.y + region.h + padY) - y;
+    let applied = false;
+    const applyOnReady = async () => {
+      if (applied || !img.naturalWidth || !img.naturalHeight) return;
+      applied = true;
+      try {
+        const covers = await this.coversFor(item);
+        const concealed = covers.some((cover) => cover.id === item.cover.id) ? covers : [...covers, item.cover];
+        this.applyCrop(cropBox, img, x, y, w, h);
+        for (const property of ["left", "top", "width", "height"]) masks.style[property] = img.style[property];
+        for (const cover of concealed) {
+          if (!showAnswer || cover.id !== item.cover.id) this.renderConcealer(masks, cover);
+        }
+        cropBox.removeClass("sNr-quiz-crop-loading");
+      } catch (error) {
+        console.error("Slide and Reveal: could not prepare quiz crop", error);
+        parent.createDiv({ text: "Could not prepare this image safely. Try reopening the quiz." });
+      }
+    };
     img.onload = applyOnReady;
     img.src = this.app.vault.getResourcePath(tFile);
     if (img.complete && img.naturalWidth > 0) applyOnReady();
@@ -507,12 +646,12 @@ var QuizModal = class extends import_obsidian3.Modal {
         }
       }
       if (!outlineCover) {
-        const box = imgWrap.createDiv({ cls: "sNr-quiz-label-outline-rect" });
-        box.style.left = region.x * 100 + "%";
-        box.style.top = region.y * 100 + "%";
-        box.style.width = region.w * 100 + "%";
-        box.style.height = region.h * 100 + "%";
-        box.style.borderColor = item.cover.color || this.plugin.settings.defaultColor;
+        const box2 = imgWrap.createDiv({ cls: "sNr-quiz-label-outline-rect" });
+        box2.style.left = region.x * 100 + "%";
+        box2.style.top = region.y * 100 + "%";
+        box2.style.width = region.w * 100 + "%";
+        box2.style.height = region.h * 100 + "%";
+        box2.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
       }
     };
     img.onload = onReady;
@@ -523,7 +662,7 @@ var QuizModal = class extends import_obsidian3.Modal {
    *  Used in full-image quiz previews so labels under unrelated covers
    *  don't leak into the user's view. */
   renderConcealer(host, cover) {
-    const color = cover.color || this.plugin.settings.defaultColor;
+    const color = safeColor(cover.color || this.plugin.settings.defaultColor);
     const wrap = host.createDiv({ cls: "sNr-quiz-concealer" });
     wrap.style.left = cover.x * 100 + "%";
     wrap.style.top = cover.y * 100 + "%";
@@ -539,13 +678,13 @@ var QuizModal = class extends import_obsidian3.Modal {
       svg.appendChild(poly);
       wrap.appendChild(svg);
     } else {
-      wrap.style.background = color;
+      wrap.style.backgroundColor = color;
     }
   }
   /** Outline the cover (label region) on the answer image. Polygon if the
    *  cover has points; bbox rectangle otherwise. */
   drawAnswerOverlay(host, cover) {
-    const color = cover.color || this.plugin.settings.defaultColor;
+    const color = safeColor(cover.color || this.plugin.settings.defaultColor);
     if (cover.kind === "polygon" && cover.points) {
       const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
       svg.classList.add("sNr-quiz-label-outline");
@@ -562,12 +701,12 @@ var QuizModal = class extends import_obsidian3.Modal {
       svg.appendChild(poly);
       host.appendChild(svg);
     } else {
-      const box = host.createDiv({ cls: "sNr-quiz-label-outline-rect" });
-      box.style.left = cover.x * 100 + "%";
-      box.style.top = cover.y * 100 + "%";
-      box.style.width = cover.w * 100 + "%";
-      box.style.height = cover.h * 100 + "%";
-      box.style.borderColor = color;
+      const box2 = host.createDiv({ cls: "sNr-quiz-label-outline-rect" });
+      box2.style.left = cover.x * 100 + "%";
+      box2.style.top = cover.y * 100 + "%";
+      box2.style.width = cover.w * 100 + "%";
+      box2.style.height = cover.h * 100 + "%";
+      box2.style.borderColor = color;
     }
   }
   advance() {
@@ -617,6 +756,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.polyDrawingPaths = /* @__PURE__ */ new Set();
     // polygon draw mode
     this.saveQueued = false;
+    this.saveTimer = null;
+    this.saveChain = Promise.resolve();
+    this.annotationRevision = null;
+    this.saveProblem = "";
+    this.annotationEpoch = 0;
     /** When non-null, the user is mid-draft of a target region for this cover
      *  (cross-diagram quiz authoring). Routes canvas clicks to addPolyPoint
      *  even when polyDrawingPaths doesn't include the image. */
@@ -648,12 +792,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     /** Parallel selection for target regions. Lives separately because a
      *  target region isn't a Rect — it's a sub-field of its owning cover. */
     this.targetSelection = null;
-    /** Tracks the most recently-attached body-level mousedown listener used
-     *  by selectShape / selectTargetRegion. We remove it before adding a new
-     *  one — otherwise stale listeners from a previous selection fire on the
-     *  next click and tear down the new toolbar before its buttons' click
-     *  events can fire. */
-    this.currentOffClick = null;
+    /** One owner for the selected toolbar and all of its listeners. */
+    this.selectionCleanup = null;
+    this.tooltips = /* @__PURE__ */ new Set();
+    this.refreshTimer = null;
     this.escScopePushed = false;
     this.plugin = plugin;
     this.escScope = new import_obsidian4.Scope(this.app.scope);
@@ -662,11 +804,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       return false;
     });
   }
-  /** Study mode is view-only: no drag/resize/select/delete/draw/rename.
-   *  Reveal actions (rail, wheel, arrow keys, dblclick-to-toggle) still work.
-   *  Every mutating entry point checks this before proceeding. */
-  isEditMode() {
-    return this.plugin.settings.mode === "edit";
+  /** Editing requires safely loaded annotations and permission in the current mode. */
+  canEdit() {
+    return this.annotationRevision !== null && !this.saveProblem && (this.plugin.settings.mode === "edit" || this.plugin.settings.allowEditsInStudyMode !== false);
   }
   getViewType() {
     return VIEW_TYPE;
@@ -685,6 +825,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   async setState(state, result) {
     const s = state;
     if (s && typeof s.folderPath === "string") {
+      if (this.saveQueued) await this.saveFolderData();
+      await this.saveChain;
       this.folderPath = s.folderPath;
       await this.loadFolderData();
       this.undoStack = [];
@@ -737,31 +879,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
       });
     }, { passive: false });
-    const refresh = (f) => {
-      if (f instanceof import_obsidian4.TFile && IMG_RE.test(f.path)) this.render();
+    const refresh = (file) => {
+      if (file instanceof import_obsidian4.TFile && IMG_RE.test(file.path) && this.containsPath(file.path)) this.queueRefresh();
+      else if (file instanceof import_obsidian4.TFolder && (this.containsPath(file.path) || this.folderPath.startsWith(file.path + "/"))) this.queueRefresh();
     };
     this.registerEvent(this.app.vault.on("create", refresh));
     this.registerEvent(this.app.vault.on("delete", refresh));
-    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (!(file instanceof import_obsidian4.TFile)) return;
-      const inFolderNow = this.folderPath && (file.path === this.folderPath || file.path.startsWith(this.folderPath + "/"));
-      const wasInFolder = this.folderPath && (oldPath === this.folderPath || oldPath.startsWith(this.folderPath + "/"));
-      if (!inFolderNow && !wasInFolder) return;
-      if (IMG_RE.test(oldPath) || IMG_RE.test(file.path)) {
-        const oldKey = relTo(this.folderPath, oldPath);
-        const newKey = relTo(this.folderPath, file.path);
-        if (oldKey !== newKey) {
-          if (this.folderData.rects[oldKey]) {
-            this.folderData.rects[newKey] = this.folderData.rects[oldKey];
-            delete this.folderData.rects[oldKey];
-          }
-          const idx = this.folderData.order.indexOf(oldKey);
-          if (idx >= 0) this.folderData.order[idx] = newKey;
-          void this.saveFolderData();
-        }
-        this.render();
-      }
-    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.onVaultRename(file, oldPath)));
     this.registerDomEvent(document, "keydown", (e) => {
       if (e.key !== "Escape") return;
       const target = e.target;
@@ -775,7 +899,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const mod = e.ctrlKey || e.metaKey;
       const t = e.target;
       const inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
-      if (!inField && (e.key === "Delete" || e.key === "Backspace") && this.isEditMode()) {
+      if (!inField && (e.key === "Delete" || e.key === "Backspace") && this.canEdit()) {
         if (this.targetSelection) {
           e.preventDefault();
           e.stopPropagation();
@@ -832,6 +956,16 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
   }
   async onClose() {
+    if (this.saveQueued) await this.saveFolderData();
+    await this.saveChain;
+    this.annotationEpoch++;
+    this.annotationRevision = null;
+    this.cancelScheduledSave();
+    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.cancelRectDraft();
+    this.clearSelection();
+    this.clearTooltips();
     this.timers.forEach((t) => window.clearTimeout(t));
     this.timers.clear();
     this.cancelPolyDraft();
@@ -840,62 +974,149 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.escScopePushed = false;
     }
   }
-  annotFilePath() {
-    return joinPath(this.folderPath, ANNOT_FILE);
+  containsPath(path) {
+    return !!this.folderPath && (path === this.folderPath || path.startsWith(this.folderPath + "/"));
   }
-  async loadFolderData() {
-    this.folderData = { rects: {}, order: [], revealSteps: {} };
-    if (!this.folderPath) return;
-    const newPath = this.annotFilePath();
-    const legacyPath = joinPath(this.folderPath, LEGACY_ANNOT_FILE);
-    let path = newPath;
-    if (!await this.app.vault.adapter.exists(newPath) && await this.app.vault.adapter.exists(legacyPath)) {
-      path = legacyPath;
-    }
-    try {
-      if (await this.app.vault.adapter.exists(path)) {
-        const raw = await this.app.vault.adapter.read(path);
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          if (parsed.rects && typeof parsed.rects === "object" && Array.isArray(parsed.order)) {
-            this.folderData = {
-              rects: parsed.rects,
-              order: parsed.order,
-              revealSteps: parsed.revealSteps && typeof parsed.revealSteps === "object" ? parsed.revealSteps : {},
-              scrollTop: typeof parsed.scrollTop === "number" ? parsed.scrollTop : 0
-            };
-          } else {
-            const rects = parsed;
-            this.folderData = {
-              rects,
-              order: Object.keys(rects).sort(),
-              revealSteps: {}
-            };
+  queueRefresh() {
+    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = null;
+      this.render();
+    }, 100);
+  }
+  onVaultRename(file, oldPath) {
+    const rebase = (path, from = oldPath, to = file.path) => path === from ? to : path.startsWith(from + "/") ? to + path.slice(from.length) : path;
+    const rootMoved = file instanceof import_obsidian4.TFolder && (this.folderPath === oldPath || this.folderPath.startsWith(oldPath + "/"));
+    const within = this.containsPath(file.path);
+    const wasWithin = this.containsPath(oldPath);
+    if (!rootMoved && !within && !wasWithin) return;
+    if (!(file instanceof import_obsidian4.TFolder) && (!(file instanceof import_obsidian4.TFile) || !IMG_RE.test(oldPath) && !IMG_RE.test(file.path))) return;
+    if (rootMoved) {
+      this.cancelScheduledSave();
+      this.annotationEpoch++;
+      this.folderPath = rebase(this.folderPath);
+      if (this.annotationRevision) this.annotationRevision = { ...this.annotationRevision, path: rebase(this.annotationRevision.path) };
+      this.plugin.settings.knownFolders = [...new Set(this.plugin.settings.knownFolders.map((path) => rebase(path)))];
+      void this.plugin.saveSettings();
+      this.app.workspace.requestSaveLayout();
+    } else if (within && wasWithin) {
+      const oldKey = relTo(this.folderPath, oldPath);
+      const newKey = relTo(this.folderPath, file.path);
+      const remap = (data) => {
+        var _a;
+        const rects = /* @__PURE__ */ Object.create(null);
+        for (const [key, value] of Object.entries(data.rects)) rects[rebase(key, oldKey, newKey)] = value;
+        data.rects = rects;
+        data.order = data.order.map((key) => rebase(key, oldKey, newKey));
+        const steps = /* @__PURE__ */ Object.create(null);
+        for (const [key, value] of Object.entries((_a = data.revealSteps) != null ? _a : {})) steps[rebase(key, oldKey, newKey)] = value;
+        data.revealSteps = steps;
+      };
+      remap(this.folderData);
+      if (file instanceof import_obsidian4.TFolder) {
+        for (const op of [...this.undoStack, ...this.redoStack]) {
+          if (op.type === "data") {
+            const data = JSON.parse(op.snap);
+            remap(data);
+            op.snap = JSON.stringify(data);
           }
         }
       }
+    }
+    if (file instanceof import_obsidian4.TFolder) {
+      for (const op of [...this.undoStack, ...this.redoStack]) {
+        if (op.type === "rename") {
+          op.oldPath = rebase(op.oldPath);
+          op.newPath = rebase(op.newPath);
+        }
+      }
+    }
+    if (this.activeBlockPath) this.activeBlockPath = rebase(this.activeBlockPath);
+    this.drawingPaths = new Set([...this.drawingPaths].map((path) => rebase(path)));
+    this.polyDrawingPaths = new Set([...this.polyDrawingPaths].map((path) => rebase(path)));
+    this.scheduleSave();
+    this.queueRefresh();
+  }
+  clearSelection() {
+    const cleanup = this.selectionCleanup;
+    this.selectionCleanup = null;
+    cleanup == null ? void 0 : cleanup();
+    this.selection = null;
+    this.targetSelection = null;
+  }
+  clearTooltips() {
+    this.tooltips.forEach((tip) => tip.remove());
+    this.tooltips.clear();
+  }
+  async loadFolderData() {
+    this.cancelScheduledSave();
+    const epoch = ++this.annotationEpoch;
+    const folder = this.folderPath;
+    this.annotationRevision = null;
+    this.saveProblem = "";
+    this.folderData = emptyAnnotations();
+    if (!this.folderPath) return;
+    try {
+      const loaded = await this.plugin.annotations.load(folder);
+      if (epoch !== this.annotationEpoch) return;
+      this.folderData = loaded.data;
+      this.annotationRevision = loaded.revision;
+      if (!loaded.valid) this.saveProblem = "Some annotations are invalid. Saving is paused to preserve the original file.";
     } catch (e) {
-      console.error("Slide and Reveal: failed to load", path, e);
-      new import_obsidian4.Notice(`Slide and Reveal: couldn't read ${path}`);
+      if (epoch !== this.annotationEpoch) return;
+      console.error("Slide and Reveal: failed to load", folder, e);
+      this.saveProblem = "Could not load annotations. Saving is paused to preserve the original file.";
+      new import_obsidian4.Notice(this.saveProblem);
     }
   }
   async saveFolderData() {
-    if (!this.folderPath) return;
-    try {
-      await this.app.vault.adapter.write(this.annotFilePath(), JSON.stringify(this.folderData, null, 2));
-      this.plugin.rememberFolder(this.folderPath);
-    } catch (e) {
-      console.error("Slide and Reveal: failed to save", e);
-      new import_obsidian4.Notice("Slide and Reveal: save failed (see console)");
-    }
+    this.cancelScheduledSave();
+    if (!this.folderPath || !this.annotationRevision || this.saveProblem) return;
+    const folder = this.folderPath;
+    const epoch = this.annotationEpoch;
+    const raw = JSON.stringify(this.folderData, null, 2);
+    this.saveChain = this.saveChain.then(async () => {
+      if (epoch !== this.annotationEpoch || !this.annotationRevision || this.saveProblem) return;
+      try {
+        const revision = await this.plugin.annotations.save(folder, this.annotationRevision, raw);
+        if (epoch !== this.annotationEpoch) return;
+        this.annotationRevision = revision;
+        this.plugin.rememberFolder(folder);
+      } catch (e) {
+        if (epoch !== this.annotationEpoch) return;
+        console.error("Slide and Reveal: failed to save", e);
+        this.saveProblem = e instanceof Error ? e.message : "Saving failed. Reload annotations before editing.";
+        new import_obsidian4.Notice(this.saveProblem + " Your unsaved changes remain in this view.");
+        this.render();
+      }
+    });
+    await this.saveChain;
   }
   scheduleSave() {
-    if (this.saveQueued) return;
+    if (this.saveQueued || !this.annotationRevision || this.saveProblem) return;
     this.saveQueued = true;
-    window.setTimeout(async () => {
-      this.saveQueued = false;
+    this.saveTimer = window.setTimeout(async () => {
       await this.saveFolderData();
     }, 250);
+  }
+  cancelScheduledSave() {
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    this.saveQueued = false;
+  }
+  async pauseAnnotationSaving(message) {
+    this.cancelScheduledSave();
+    this.annotationEpoch++;
+    this.saveProblem = message;
+    await this.saveChain;
+    this.render();
+  }
+  clearArchivedAnnotations() {
+    this.folderData = emptyAnnotations();
+    this.annotationRevision = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.render();
   }
   // ---------- Undo / redo ----------
   snapshot() {
@@ -933,6 +1154,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
   }
   async undo() {
+    if (!this.canEdit()) return;
     const op = this.undoStack.pop();
     if (!op) {
       new import_obsidian4.Notice("Nothing to undo");
@@ -941,6 +1163,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     await this.applyOp(op, "redoStack");
   }
   async redo() {
+    if (!this.canEdit()) return;
     const op = this.redoStack.pop();
     if (!op) {
       new import_obsidian4.Notice("Nothing to redo");
@@ -963,15 +1186,25 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     var _a;
     const root = this.containerEl.children[1];
     this.cancelRectDraft();
+    if (this.polyDraft) {
+      this.cancelPolyDraft();
+      new import_obsidian4.Notice("Unfinished polygon cancelled because the view refreshed.");
+    }
+    if (!this.canEdit()) {
+      this.drawingPaths.clear();
+      this.polyDrawingPaths.clear();
+      this.draggingThumbPath = null;
+    }
     const savedScroll = this.scrollerEl ? this.scrollerEl.scrollTop : (_a = this.folderData.scrollTop) != null ? _a : 0;
     const savedScrollLeft = this.scrollerEl ? this.scrollerEl.scrollLeft : 0;
-    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
-    activeDocument.body.querySelectorAll(".sNr-tip").forEach((t) => t.remove());
+    this.clearSelection();
+    this.clearTooltips();
     this.selection = null;
+    this.targetSelection = null;
     root.empty();
     root.addClass("sNr-view");
-    root.classList.toggle("sNr-mode-edit", this.isEditMode());
-    root.classList.toggle("sNr-mode-study", !this.isEditMode());
+    root.classList.toggle("sNr-mode-edit", this.canEdit());
+    root.classList.toggle("sNr-mode-study", !this.canEdit());
     root.tabIndex = -1;
     const settings = this.plugin.settings;
     root.style.setProperty("--sNr-scale", settings.imageScale + "%");
@@ -981,6 +1214,19 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       text: this.folderPath ? `Folder: ${this.folderPath}` : 'No folder \u2014 right-click a folder in the file explorer and choose "Open Slide and Reveal here".'
     });
     if (!this.folderPath) return;
+    if (this.saveProblem) {
+      const warning = header.createDiv({ cls: "sNr-save-warning" });
+      warning.createEl("p", { text: this.saveProblem });
+      const reload = warning.createEl("button", { text: "Discard unsaved changes and reload annotations" });
+      reload.onclick = async () => {
+        reload.disabled = true;
+        await this.saveChain;
+        await this.loadFolderData();
+        this.undoStack = [];
+        this.redoStack = [];
+        this.render();
+      };
+    }
     const row = header.createDiv({ cls: "sNr-header-row" });
     this.iconBtn(row, "eye", "Reveal all").onclick = () => this.toggleAll(root, true);
     this.iconBtn(row, "eye-off", "Hide all").onclick = () => this.toggleAll(root, false);
@@ -1017,10 +1263,12 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const undoBtn = row.createEl("button");
     (0, import_obsidian4.setIcon)(undoBtn, "undo-2");
     undoBtn.title = "Undo (\u2318Z)";
+    undoBtn.disabled = !this.canEdit();
     undoBtn.onclick = () => this.undo();
     const redoBtn = row.createEl("button");
     (0, import_obsidian4.setIcon)(redoBtn, "redo-2");
     redoBtn.title = "Redo (\u21E7\u2318Z)";
+    redoBtn.disabled = !this.canEdit();
     redoBtn.onclick = () => this.redo();
     const prevBtn = row.createEl("button");
     (0, import_obsidian4.setIcon)(prevBtn, "arrow-up");
@@ -1175,7 +1423,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   renderThumb(file) {
     const thumb = this.sidebarEl.createDiv({ cls: "sNr-thumb" });
     thumb.dataset.path = file.path;
-    thumb.draggable = this.isEditMode();
+    thumb.draggable = this.canEdit();
     const img = thumb.createEl("img");
     img.src = this.app.vault.getResourcePath(file);
     img.draggable = false;
@@ -1185,7 +1433,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     let tipEl = null;
     const showTip = () => {
       if (tipEl) return;
-      tipEl = activeDocument.body.createDiv({ cls: "sNr-tip" });
+      tipEl = thumb.ownerDocument.body.createDiv({ cls: "sNr-tip" });
+      this.tooltips.add(tipEl);
       tipEl.setText(rel);
       const r = thumb.getBoundingClientRect();
       const tipW = tipEl.offsetWidth;
@@ -1196,6 +1445,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     };
     const hideTip = () => {
       if (tipEl) {
+        this.tooltips.delete(tipEl);
         tipEl.remove();
         tipEl = null;
       }
@@ -1215,6 +1465,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       thumb.addClass("sNr-thumb-active");
     };
     thumb.addEventListener("dragstart", (e) => {
+      if (!this.canEdit()) {
+        e.preventDefault();
+        return;
+      }
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = "move";
         try {
@@ -1251,6 +1505,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
     thumb.addEventListener("drop", async (e) => {
       var _a;
+      if (!this.canEdit()) return;
       e.preventDefault();
       thumb.classList.remove("sNr-drop-above", "sNr-drop-below");
       const sourcePath = ((_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain")) || this.draggingThumbPath || "";
@@ -1334,7 +1589,16 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
   }
   toggleAll(scopeEl, reveal) {
-    scopeEl.querySelectorAll(".sNr-rect").forEach((r) => r.classList.toggle("sNr-revealed", reveal));
+    scopeEl.querySelectorAll(".sNr-block").forEach((block) => {
+      var _a;
+      const file = this.app.vault.getAbstractFileByPath((_a = block.dataset.path) != null ? _a : "");
+      const canvas = block.querySelector(".sNr-canvas");
+      if (file instanceof import_obsidian4.TFile && canvas) this.setImageRevealed(file, canvas, reveal);
+    });
+  }
+  setImageRevealed(file, canvas, reveal) {
+    const groups = this.computeRevealGroups(file);
+    this.setRevealStep(file, canvas, groups, reveal ? groups.length : 0);
   }
   rectsFor(file) {
     const key = relTo(this.folderPath, file.path);
@@ -1355,7 +1619,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     const top = block.createDiv({ cls: "sNr-block-top" });
     const titleWrap = top.createDiv({ cls: "sNr-title-wrap" });
     titleWrap.createEl("h4", { text: relTo(this.folderPath, file.path) });
-    if (this.isEditMode()) {
+    if (this.canEdit()) {
       const renameBtn = titleWrap.createEl("button", { cls: "sNr-rename-btn" });
       (0, import_obsidian4.setIcon)(renameBtn, "pencil");
       renameBtn.title = "Rename file";
@@ -1387,7 +1651,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (r.targetRegion) this.renderTargetRegionOverlay(canvas, r);
     }
     this.renderRail(railHost, file, canvas);
+    this.bindRevealWheel(file, canvas);
     canvas.addEventListener("mousedown", (e) => {
+      if (!this.canEdit()) return;
       if (this.polyDrawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
         this.addPolyPoint(canvas, file, block, e);
         return;
@@ -1398,7 +1664,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
     });
     canvas.addEventListener("click", (e) => {
-      if (!this.drawingPaths.has(file.path)) return;
+      if (!this.canEdit() || !this.drawingPaths.has(file.path)) return;
       if (e.target !== canvas && e.target !== imgEl) return;
       if (e.detail !== 1 && e.detail !== 0) return;
       if (!this.rectDraft || this.rectDraft.canvas !== canvas) {
@@ -1410,6 +1676,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
     canvas.addEventListener("dblclick", (e) => {
       var _a;
+      if (!this.canEdit()) return;
       if (this.polyDrawingPaths.has(file.path) || this.targetDraftCoverId && ((_a = this.polyDraft) == null ? void 0 : _a.file) === file) {
         e.preventDefault();
         e.stopPropagation();
@@ -1421,6 +1688,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   /** First click: place the anchor corner and start a semi-transparent
    *  preview that follows the cursor. */
   beginRectDraft(canvas, file, e) {
+    if (!this.canEdit()) return;
     const cb = canvas.getBoundingClientRect();
     const sx = clamp01((e.clientX - cb.left) / cb.width);
     const sy = clamp01((e.clientY - cb.top) / cb.height);
@@ -1446,6 +1714,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   /** Second click: turn the ghost into a real cover. */
   async commitRectDraft(e) {
+    if (!this.canEdit()) return;
     const draft = this.rectDraft;
     if (!draft) return;
     const { canvas, file, sx, sy, ghost, onMove } = draft;
@@ -1489,6 +1758,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   // ---------- Polygon drafting ----------
   addPolyPoint(canvas, file, block, e) {
+    if (!this.canEdit()) return;
     e.preventDefault();
     const cb = canvas.getBoundingClientRect();
     const x = clamp01((e.clientX - cb.left) / cb.width);
@@ -1515,13 +1785,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     this.polyDraft.points.push({ x, y });
     this.repaintPolyDraft();
+    this.refreshHeaderTools();
   }
   repaintPolyDraft() {
     if (!this.polyDraft) return;
-    const { svg, poly, points } = this.polyDraft;
-    poly.setAttribute("points", points.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
+    const { svg, poly, points: points2 } = this.polyDraft;
+    poly.setAttribute("points", points2.map((p) => `${p.x * 100},${p.y * 100}`).join(" "));
     svg.querySelectorAll("circle").forEach((c) => c.remove());
-    for (const p of points) {
+    for (const p of points2) {
       const c = activeDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
       c.setAttribute("cx", String(p.x * 100));
       c.setAttribute("cy", String(p.y * 100));
@@ -1531,20 +1802,22 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   cancelPolyDraft() {
     if (!this.polyDraft) return;
+    this.polyDraft.block.removeClass("sNr-drafting");
     this.polyDraft.cleanup();
     this.polyDraft = null;
     this.targetDraftCoverId = null;
   }
   async commitPolyDraft() {
+    if (!this.canEdit()) return;
     const draft = this.polyDraft;
     if (!draft) return;
     if (draft.points.length < 3) {
       new import_obsidian4.Notice("Need at least 3 points for a polygon.");
       return;
     }
-    const { file, points, destination } = draft;
+    const { file, points: points2, destination } = draft;
     let minX = 1, minY = 1, maxX = 0, maxY = 0;
-    for (const p of points) {
+    for (const p of points2) {
       if (p.x < minX) minX = p.x;
       if (p.y < minY) minY = p.y;
       if (p.x > maxX) maxX = p.x;
@@ -1552,7 +1825,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     const w = Math.max(0.01, maxX - minX);
     const h = Math.max(0.01, maxY - minY);
-    const localPts = points.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
+    const localPts = points2.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
     if (destination.kind === "target") {
       const { list: list2 } = this.rectsFor(file);
       const cover = list2.find((r) => r.id === destination.coverId);
@@ -1595,6 +1868,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  with destination=target and the target-drafting state flag. Existing
    *  polygon-draw mode (if any) is cancelled. */
   beginTargetRegionDraft(canvas, file, block, coverId) {
+    if (!this.canEdit()) return;
     this.cancelPolyDraft();
     this.polyDrawingPaths.delete(file.path);
     this.drawingPaths.delete(file.path);
@@ -1625,17 +1899,20 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  the target region is not a Rect — it's a sub-field of its cover. */
   selectTargetRegion(canvas, file, cover, el) {
     if (!cover.targetRegion) return;
-    if (!this.isEditMode()) return;
+    if (!this.canEdit()) return;
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
-    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    this.clearSelection();
     root.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
     el.classList.add("sNr-selected");
     this.selection = null;
     this.targetSelection = { canvas, file, cover, el };
     this.renderTargetRegionVertices(canvas, file, cover, el);
-    const tb = activeDocument.body.createDiv({ cls: "sNr-rect-toolbar" });
+    const doc = canvas.ownerDocument;
+    const win = doc.defaultView;
+    const scroller = this.scrollerEl;
+    const tb = doc.body.createDiv({ cls: "sNr-rect-toolbar" });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 200;
@@ -1644,18 +1921,19 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       let top = rb.top - tbH - 6;
       if (top < margin) top = rb.bottom + 6;
       let left = rb.left;
-      const maxLeft = window.innerWidth - tbW - margin;
+      const maxLeft = win.innerWidth - tbW - margin;
       if (left > maxLeft) left = maxLeft;
       if (left < margin) left = margin;
       tb.style.top = top + "px";
       tb.style.left = left + "px";
     };
-    window.requestAnimationFrame(reposition);
-    this.scrollerEl.addEventListener("scroll", reposition);
-    window.addEventListener("resize", reposition);
+    const frame = win.requestAnimationFrame(reposition);
+    scroller.addEventListener("scroll", reposition);
+    win.addEventListener("resize", reposition);
     const detachReposition = () => {
-      this.scrollerEl.removeEventListener("scroll", reposition);
-      window.removeEventListener("resize", reposition);
+      win.cancelAnimationFrame(frame);
+      scroller.removeEventListener("scroll", reposition);
+      win.removeEventListener("resize", reposition);
     };
     const labelText = cover.pair > 0 ? `Target #${cover.pair}` : "Target (unpaired)";
     tb.createSpan({ cls: "sNr-tb-label", text: labelText });
@@ -1665,36 +1943,33 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     del.title = "Delete target region (cover stays; this label leaves the quiz pool)";
     del.onclick = async (e) => {
       e.stopPropagation();
-      tb.remove();
-      detachReposition();
+      this.clearSelection();
       await this.removeTargetRegion(file, cover.id);
     };
-    if (this.currentOffClick) {
-      activeDocument.removeEventListener("mousedown", this.currentOffClick, true);
-      this.currentOffClick = null;
-    }
     const offClick = (ev) => {
       const target = ev.target;
       if (!target) return;
       if (tb.contains(target) || el.contains(target)) return;
       if (target.closest && target.closest(".sNr-vertex")) return;
+      this.clearSelection();
+    };
+    this.selectionCleanup = () => {
       tb.remove();
       el.classList.remove("sNr-selected");
       canvas.querySelectorAll(".sNr-vertex[data-target-cover-id]").forEach((v) => v.remove());
       detachReposition();
       this.targetSelection = null;
-      activeDocument.removeEventListener("mousedown", offClick, true);
-      if (this.currentOffClick === offClick) this.currentOffClick = null;
+      doc.removeEventListener("mousedown", offClick, true);
     };
-    this.currentOffClick = offClick;
-    activeDocument.addEventListener("mousedown", offClick, true);
+    doc.addEventListener("mousedown", offClick, true);
   }
   /** Delete the currently-selected target region (Del/Backspace path). */
   async deleteSelectedTargetRegion() {
+    if (!this.canEdit()) return;
     const sel = this.targetSelection;
     if (!sel) return;
     this.targetSelection = null;
-    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    this.clearSelection();
     await this.removeTargetRegion(sel.file, sel.cover.id);
   }
   /** Draw draggable handles at each vertex of a target region. Mirrors
@@ -1715,11 +1990,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       v.style.left = cx * 100 + "%";
       v.style.top = cy * 100 + "%";
       v.addEventListener("mousedown", (e) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         const cb = canvas.getBoundingClientRect();
         this.snapshot();
         const move = (mv) => {
+          if (!this.canEdit()) return;
           const nx = clamp01((mv.clientX - cb.left) / cb.width);
           const ny = clamp01((mv.clientY - cb.top) / cb.height);
           v.style.left = nx * 100 + "%";
@@ -1747,6 +2024,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         activeDocument.addEventListener("mouseup", up);
       });
       v.addEventListener("contextmenu", async (e) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         if (tr.points.length <= 3) {
@@ -1808,6 +2086,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   /** Remove a target region from a cover (undoable). */
   async removeTargetRegion(file, coverId) {
+    if (!this.canEdit()) return;
     const { list } = this.rectsFor(file);
     const cover = list.find((r) => r.id === coverId);
     if (!cover || !cover.targetRegion) return;
@@ -1833,7 +2112,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     wrap.style.top = tr.y * 100 + "%";
     wrap.style.width = tr.w * 100 + "%";
     wrap.style.height = tr.h * 100 + "%";
-    wrap.style.setProperty("--sNr-color", cover.color || this.plugin.settings.defaultColor);
+    wrap.style.setProperty("--sNr-color", safeColor(cover.color || this.plugin.settings.defaultColor));
     const svg = activeDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 100 100");
     svg.setAttribute("preserveAspectRatio", "none");
@@ -1855,7 +2134,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     wrap.addEventListener("mousedown", (e) => {
       if (e.target.classList.contains("sNr-vertex")) return;
       if (!cover.targetRegion) return;
-      if (!this.isEditMode()) return;
+      if (!this.canEdit()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1864,6 +2143,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const ox = tr2.x, oy = tr2.y;
       let snapped = false;
       const move = (mv) => {
+        if (!this.canEdit()) return;
         const dx = (mv.clientX - startX) / cb.width;
         const dy = (mv.clientY - startY) / cb.height;
         if (!snapped && Math.abs(dx) + Math.abs(dy) > 1e-3) {
@@ -1895,7 +2175,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     connectorSvg.dataset.coverId = cover.id;
     connectorSvg.setAttribute("viewBox", "0 0 100 100");
     connectorSvg.setAttribute("preserveAspectRatio", "none");
-    connectorSvg.style.setProperty("--sNr-color", cover.color || this.plugin.settings.defaultColor);
+    connectorSvg.style.setProperty("--sNr-color", safeColor(cover.color || this.plugin.settings.defaultColor));
     const lineEl = activeDocument.createElementNS("http://www.w3.org/2000/svg", "line");
     connectorSvg.appendChild(lineEl);
     canvas.appendChild(connectorSvg);
@@ -1910,7 +2190,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     el.style.top = rect.y * 100 + "%";
     el.style.width = rect.w * 100 + "%";
     el.style.height = rect.h * 100 + "%";
-    el.style.setProperty("--sNr-color", rect.color || this.plugin.settings.defaultColor);
+    el.style.setProperty("--sNr-color", safeColor(rect.color || this.plugin.settings.defaultColor));
     el.dataset.id = rect.id;
     el.dataset.pair = String(rect.pair || 0);
     this.renderPairOverlay(canvas, rect);
@@ -1941,13 +2221,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const e = ev;
       if (e.target === handle) return;
       if (this.drawingPaths.has(file.path) || this.polyDrawingPaths.has(file.path)) return;
-      if (!this.isEditMode()) return;
+      if (!this.canEdit()) return;
       e.preventDefault();
       const cb = canvas.getBoundingClientRect();
       const startX = e.clientX, startY = e.clientY;
       const ox = rect.x, oy = rect.y;
       this.snapshot();
       const move = (mv) => {
+        if (!this.canEdit()) return;
         const dx = (mv.clientX - startX) / cb.width;
         const dy = (mv.clientY - startY) / cb.height;
         rect.x = clamp01(Math.min(1 - rect.w, Math.max(0, ox + dx)));
@@ -1966,7 +2247,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       activeDocument.addEventListener("mouseup", up);
     });
     handle.addEventListener("mousedown", (e) => {
-      if (!this.isEditMode()) return;
+      if (!this.canEdit()) return;
       e.preventDefault();
       e.stopPropagation();
       const cb = canvas.getBoundingClientRect();
@@ -1974,6 +2255,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const ow = rect.w, oh = rect.h;
       this.snapshot();
       const move = (ev) => {
+        if (!this.canEdit()) return;
         const dx = (ev.clientX - startX) / cb.width;
         const dy = (ev.clientY - startY) / cb.height;
         rect.w = clamp01(Math.max(0.01, Math.min(1 - rect.x, ow + dx)));
@@ -2119,6 +2401,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (e.target === thumb) return;
       beginScrub(e);
     });
+  }
+  /** Bind once per canvas; rebuilding the rail must not multiply wheel steps. */
+  bindRevealWheel(file, canvas) {
     let accum = 0;
     canvas.addEventListener("wheel", (e) => {
       if (e.ctrlKey) return;
@@ -2136,6 +2421,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         this.bumpRevealStep(file, canvas, -1);
       }
     }, { passive: false });
+  }
+  refreshRevealRail(file, canvas) {
+    var _a;
+    const host = (_a = canvas.closest(".sNr-block")) == null ? void 0 : _a.querySelector(".sNr-rail-host");
+    if (!host) return;
+    host.empty();
+    this.renderRail(host, file, canvas);
   }
   togglePair(canvas, rect, reveal) {
     const pair = rect.pair || 0;
@@ -2172,6 +2464,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.togglePair(canvas, rect, false);
   }
   applyColor(canvas, file, rect, newColor) {
+    if (!this.canEdit()) return;
     rect.color = newColor;
     const ownEl = canvas.querySelector(`.sNr-rect[data-id="${rect.id}"]`);
     if (ownEl) ownEl.style.setProperty("--sNr-color", newColor);
@@ -2236,11 +2529,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       v.style.left = cx * 100 + "%";
       v.style.top = cy * 100 + "%";
       v.addEventListener("mousedown", (e) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         const cb = canvas.getBoundingClientRect();
         this.snapshot();
         const move = (mv) => {
+          if (!this.canEdit()) return;
           const nx = clamp01((mv.clientX - cb.left) / cb.width);
           const ny = clamp01((mv.clientY - cb.top) / cb.height);
           v.style.left = nx * 100 + "%";
@@ -2268,6 +2563,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         activeDocument.addEventListener("mouseup", up);
       });
       v.addEventListener("contextmenu", async (e) => {
+        if (!this.canEdit()) return;
         e.preventDefault();
         e.stopPropagation();
         if (!rect.points || rect.points.length <= 3) {
@@ -2310,13 +2606,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         }
       }
     }
-    const editMode = this.isEditMode();
+    const editMode = this.canEdit();
     const drawBtn = this.iconBtn(tools, "square", "Rectangle");
-    drawBtn.title = editMode ? "Add rectangle to the focused image (click a corner, move, click again)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
+    drawBtn.title = editMode ? "Add rectangle to the focused image (click a corner, move, click again)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass("sNr-active");
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
-      if (!file) return;
+      if (!file || !this.canEdit()) return;
       if (this.drawingPaths.has(file.path)) {
         this.drawingPaths.delete(file.path);
         this.cancelRectDraft();
@@ -2327,11 +2623,11 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.render();
     };
     const polyBtn = this.iconBtn(tools, "pentagon", "Polygon");
-    polyBtn.title = editMode ? "Add polygon to the focused image (click vertices, then Finalize)" : "Drawing is disabled in study mode. Switch to edit mode in settings.";
+    polyBtn.title = editMode ? "Add polygon to the focused image (click vertices, then Finalize)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass("sNr-active");
     if (!file || !editMode) polyBtn.disabled = true;
     polyBtn.onclick = () => {
-      if (!file) return;
+      if (!file || !this.canEdit()) return;
       if (this.polyDrawingPaths.has(file.path)) {
         this.polyDrawingPaths.delete(file.path);
         this.cancelPolyDraft();
@@ -2378,14 +2674,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     if (!ctx) revealBtn.disabled = true;
     revealBtn.onclick = () => {
       if (!ctx) return;
-      ctx.canvas.querySelectorAll(".sNr-rect").forEach((r) => r.classList.add("sNr-revealed"));
+      this.setImageRevealed(ctx.file, ctx.canvas, true);
     };
     const hideBtn = this.iconBtn(tools, "eye-off", "Hide");
     hideBtn.title = "Hide all shapes on the focused image";
     if (!ctx) hideBtn.disabled = true;
     hideBtn.onclick = () => {
       if (!ctx) return;
-      ctx.canvas.querySelectorAll(".sNr-rect").forEach((r) => r.classList.remove("sNr-revealed"));
+      this.setImageRevealed(ctx.file, ctx.canvas, false);
     };
   }
   /** The image whose block is currently scrolled-to (used by keyboard
@@ -2454,6 +2750,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   /** Delete the currently-selected shape (called by Del/Backspace and the
    *  toolbar trash button). Snapshots first so it's undoable. */
   async deleteSelectedShape() {
+    if (!this.canEdit()) return;
     const sel = this.selection;
     if (!sel) return;
     this.snapshot();
@@ -2495,17 +2792,20 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   // ---------- Floating per-rect toolbar ----------
   selectShape(canvas, file, rect, el) {
-    if (!this.isEditMode()) return;
+    if (!this.canEdit()) return;
     const root = canvas.closest(".sNr-view");
     root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
     root.querySelectorAll(".sNr-target-region.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
-    activeDocument.body.querySelectorAll(".sNr-rect-toolbar").forEach((t) => t.remove());
+    this.clearSelection();
     root.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
     el.classList.add("sNr-selected");
     this.selection = { canvas, file, rect, el };
     this.targetSelection = null;
     if (rect.kind === "polygon") this.renderPolyVertices(canvas, file, rect, el);
-    const tb = activeDocument.body.createDiv({ cls: "sNr-rect-toolbar" });
+    const doc = canvas.ownerDocument;
+    const win = doc.defaultView;
+    const scroller = this.scrollerEl;
+    const tb = doc.body.createDiv({ cls: "sNr-rect-toolbar" });
     const reposition = () => {
       const rb = el.getBoundingClientRect();
       const tbW = tb.offsetWidth || 280;
@@ -2514,18 +2814,19 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       let top = rb.top - tbH - 6;
       if (top < margin) top = rb.bottom + 6;
       let left = rb.left;
-      const maxLeft = window.innerWidth - tbW - margin;
+      const maxLeft = win.innerWidth - tbW - margin;
       if (left > maxLeft) left = maxLeft;
       if (left < margin) left = margin;
       tb.style.top = top + "px";
       tb.style.left = left + "px";
     };
-    window.requestAnimationFrame(reposition);
-    this.scrollerEl.addEventListener("scroll", reposition);
-    window.addEventListener("resize", reposition);
+    const frame = win.requestAnimationFrame(reposition);
+    scroller.addEventListener("scroll", reposition);
+    win.addEventListener("resize", reposition);
     const detachReposition = () => {
-      this.scrollerEl.removeEventListener("scroll", reposition);
-      window.removeEventListener("resize", reposition);
+      win.cancelAnimationFrame(frame);
+      scroller.removeEventListener("scroll", reposition);
+      win.removeEventListener("resize", reposition);
     };
     const bToggle = tb.createEl("button", { cls: "sNr-tb-icon-btn" });
     const setToggleIcon = (revealed) => {
@@ -2582,6 +2883,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     sec.step = "0.5";
     this.attachStepperButtons(secWrap, sec);
     sec.onchange = async () => {
+      if (!this.canEdit()) return;
       this.snapshot();
       const v = parseFloat(sec.value);
       rect.seconds = isFinite(v) && v > 0 ? v : 0;
@@ -2598,6 +2900,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     pair.title = "Pair number (0 = unpaired). Shapes sharing a pair number reveal/hide together.";
     this.attachStepperButtons(pairWrap, pair);
     pair.onchange = async () => {
+      if (!this.canEdit()) return;
       this.snapshot();
       const v = parseInt(pair.value, 10);
       rect.pair = isFinite(v) && v > 0 ? v : 0;
@@ -2611,12 +2914,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
           el.style.setProperty("--sNr-color", leader.color);
         }
       }
+      this.refreshRevealRail(file, canvas);
       await this.saveFolderData();
     };
     const insertBtn = tb.createEl("button", { cls: "sNr-tb-icon-btn" });
     (0, import_obsidian4.setIcon)(insertBtn, "list-plus");
     insertBtn.title = "Shift every OTHER shape with pair \u2265 the entered value up by 1 (the current shape keeps its number).";
     insertBtn.onclick = async (e) => {
+      if (!this.canEdit()) return;
       e.stopPropagation();
       const target = parseInt(pair.value, 10);
       if (!isFinite(target) || target <= 0) {
@@ -2644,16 +2949,17 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     tb.createDiv({ cls: "sNr-tb-divider" });
     const colorWrap = tb.createSpan({ cls: "sNr-color-wrap" });
     const colorBtn = colorWrap.createDiv({ cls: "sNr-color-btn" });
-    colorBtn.style.background = rect.color || this.plugin.settings.defaultColor;
+    colorBtn.style.background = safeColor(rect.color || this.plugin.settings.defaultColor);
     colorBtn.title = "Pick color";
     const colorInput = colorWrap.createEl("input", { type: "color" });
-    colorInput.value = rect.color || this.plugin.settings.defaultColor;
+    colorInput.value = safeColor(rect.color || this.plugin.settings.defaultColor);
     colorBtn.onclick = (e) => {
       e.stopPropagation();
       colorInput.click();
     };
     let colorSnapshotted = false;
     colorInput.oninput = () => {
+      if (!this.canEdit()) return;
       if (!colorSnapshotted) {
         this.snapshot();
         colorSnapshotted = true;
@@ -2697,29 +3003,28 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       e.stopPropagation();
       this.deleteSelectedShape();
     };
-    if (this.currentOffClick) {
-      activeDocument.removeEventListener("mousedown", this.currentOffClick, true);
-      this.currentOffClick = null;
-    }
     const offClick = (ev) => {
       const target = ev.target;
       if (!target) return;
       if (tb.contains(target) || el.contains(target)) return;
       if (target.closest && target.closest(".sNr-vertex")) return;
+      this.clearSelection();
+    };
+    this.selectionCleanup = () => {
       tb.remove();
       el.classList.remove("sNr-selected");
       canvas.querySelectorAll(".sNr-vertex").forEach((v) => v.remove());
       detachReposition();
       this.selection = null;
-      activeDocument.removeEventListener("mousedown", offClick, true);
-      if (this.currentOffClick === offClick) this.currentOffClick = null;
+      doc.removeEventListener("mousedown", offClick, true);
     };
-    this.currentOffClick = offClick;
-    activeDocument.addEventListener("mousedown", offClick, true);
+    doc.addEventListener("mousedown", offClick, true);
   }
   // ---------- File rename ----------
   renameFile(file) {
+    if (!this.canEdit()) return;
     new RenameModal(this.app, file.name, async (newName) => {
+      if (!this.canEdit()) return;
       const parent = file.parent ? file.parent.path : "";
       const newPath = parent ? `${parent}/${newName}` : newName;
       const oldPath = file.path;
@@ -2753,10 +3058,19 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
     new import_obsidian5.Setting(containerEl).setName("Mode").setDesc("Study: scrolling inside an image steps the reveal slider. Edit: wheel scrolls normally \u2014 use this when you're drawing/arranging shapes. Toggle from the header any time.").addDropdown((d) => d.addOption("study", "Study").addOption("edit", "Edit").setValue(this.plugin.settings.mode).onChange(async (v) => {
       this.plugin.settings.mode = v;
       await this.plugin.saveSettings();
-      this.app.workspace.getLeavesOfType("slide-and-reveal-view").forEach((l) => {
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
         const v2 = l.view;
         if (typeof v2.render === "function") v2.render();
       });
+    }));
+    new import_obsidian5.Setting(containerEl).setName("Allow edits in Study mode").setDesc("Turn off to lock covers, target regions, image names and image order while studying. Revealing and navigation still work, and study progress is saved. Edit mode always allows edits.").addToggle((t) => t.setValue(this.plugin.settings.allowEditsInStudyMode).onChange(async (value) => {
+      this.plugin.settings.allowEditsInStudyMode = value;
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => {
+        var _a;
+        const view = leaf.view;
+        (_a = view.render) == null ? void 0 : _a.call(view);
+      });
+      await this.plugin.saveSettings();
     }));
     new import_obsidian5.Setting(containerEl).setName("Default reveal time (seconds)").setDesc("Used by the \u23F1 button when a rectangle has no per-rect override.").addText((t) => t.setValue(String(this.plugin.settings.defaultSeconds)).onChange(async (v) => {
       const n = parseFloat(v);
@@ -2770,7 +3084,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
     new import_obsidian5.Setting(containerEl).setName("Reveal slider position").setDesc("Which side of each image the reveal/hide rail sits on.").addDropdown((d) => d.addOption("left", "Left").addOption("right", "Right").setValue(this.plugin.settings.railSide).onChange(async (v) => {
       this.plugin.settings.railSide = v;
       await this.plugin.saveSettings();
-      this.app.workspace.getLeavesOfType("slide-and-reveal-view").forEach((l) => {
+      this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
         const v2 = l.view;
         if (typeof v2.render === "function") v2.render();
       });
@@ -2818,18 +3132,14 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
           await this.plugin.forgetFolder(folder);
           this.display();
         }));
-        s.addButton((b) => b.setButtonText("Delete annotations file").setWarning().onClick(async () => {
-          const path = joinPath(folder, ANNOT_FILE);
+        s.addButton((b) => b.setButtonText("Archive annotations").setWarning().onClick(async () => {
           try {
-            if (await this.app.vault.adapter.exists(path)) {
-              await this.app.vault.adapter.remove(path);
-              new import_obsidian5.Notice(`Deleted ${path}`);
-            }
+            await this.plugin.archiveAnnotations(folder);
+            new import_obsidian5.Notice(`Annotations archived in ${folder}. Original files were kept as backups.`);
           } catch (e) {
             console.error(e);
-            new import_obsidian5.Notice("Delete failed (see console)");
+            new import_obsidian5.Notice("Archive failed (see console)");
           }
-          await this.plugin.forgetFolder(folder);
           this.display();
         }));
       }
@@ -2899,6 +3209,7 @@ var SlideAndRevealSettingTab = class extends import_obsidian5.PluginSettingTab {
 // src/main.ts
 var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
   async onload() {
+    this.annotations = new AnnotationStore(this.app.vault.adapter);
     await this.loadSettings();
     this.registerView(VIEW_TYPE, (leaf) => new SlideAndRevealView(leaf, this));
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
@@ -2961,6 +3272,7 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     if (!Array.isArray(this.settings.knownFolders)) this.settings.knownFolders = [];
+    this.settings.defaultColor = safeColor(this.settings.defaultColor);
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -2976,6 +3288,20 @@ var SlideAndRevealPlugin = class extends import_obsidian6.Plugin {
   forgetFolder(path) {
     this.settings.knownFolders = this.settings.knownFolders.filter((p) => p !== path);
     return this.saveSettings();
+  }
+  async archiveAnnotations(folder) {
+    const views = this.app.workspace.getLeavesOfType(VIEW_TYPE).map((leaf) => leaf.view).filter((view) => view.folderPath === folder);
+    await Promise.all(views.map((view) => view.pauseAnnotationSaving("Annotations archived. Reload to start again.")));
+    try {
+      await this.annotations.archive(folder);
+      views.forEach((view) => view.clearArchivedAnnotations());
+      await this.forgetFolder(folder);
+    } catch (error) {
+      views.forEach((view) => {
+        void view.pauseAnnotationSaving("Archiving failed. Reload annotations before editing.");
+      });
+      throw error;
+    }
   }
   async openForFolder(folderPath) {
     this.rememberFolder(folderPath);

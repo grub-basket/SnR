@@ -13,7 +13,7 @@ import { App, Modal, Notice, Setting, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
 import type { Rect } from './types';
 import { VIEW_TYPE } from './types';
-import { clampPoints } from './util';
+import { clampPoints, safeColor } from './util';
 import {
   buildQuizPool,
   filterToImage,
@@ -300,7 +300,7 @@ export class QuizModal extends Modal {
       x: item.cover.x, y: item.cover.y, w: item.cover.w, h: item.cover.h,
     };
     if (this.viewMode === 'cropped') {
-      this.renderCroppedRegion(wrap, item, coverRegion);
+      this.renderCroppedRegion(wrap, item, coverRegion, true);
     } else {
       this.renderFullWithOutline(wrap, item, coverRegion, /* outlineCover */ true);
     }
@@ -320,11 +320,19 @@ export class QuizModal extends Modal {
     parent: HTMLElement,
     item: QuizItem,
     region: { x: number; y: number; w: number; h: number },
+    showAnswer = false,
   ): void {
     const tFile = getImage(this.app, item.imagePath);
     if (!tFile) { parent.createDiv({ text: 'Image missing: ' + item.imagePath }); return; }
     const cropBox = parent.createDiv({ cls: 'sNr-quiz-crop' });
+    // Keep the raw image hidden until its concealers are ready (including
+    // cached images). Class toggle, not an inline style, so the store lint
+    // (no-static-styles-assignment) stays happy.
+    cropBox.addClass('sNr-quiz-crop-loading');
     const img = cropBox.createEl('img');
+    // .sNr-quiz-crop-masks supplies position:absolute + pointer-events:none;
+    // per-instance left/top/width/height are set below once the image loads.
+    const masks = cropBox.createDiv({ cls: 'sNr-quiz-crop-masks' });
     // Pad each side by 12% of the region's own dimension, clamped to the
     // image bounds. Padding scales with region size so small labels get a
     // generous halo and big regions barely change.
@@ -333,12 +341,30 @@ export class QuizModal extends Modal {
     const padY = region.h * PAD;
     const x = Math.max(0, region.x - padX);
     const y = Math.max(0, region.y - padY);
-    const w = Math.min(1 - x, region.w + 2 * padX);
-    const h = Math.min(1 - y, region.h + 2 * padY);
+    const w = Math.min(1, region.x + region.w + padX) - x;
+    const h = Math.min(1, region.y + region.h + padY) - y;
     // Attach the load handler BEFORE setting src — cached images can
     // resolve synchronously and skip an onload assigned afterward.
     // `complete` is the post-hoc check for an already-cached image.
-    const applyOnReady = () => this.applyCrop(cropBox, img, x, y, w, h);
+    let applied = false;
+    const applyOnReady = async () => {
+      if (applied || !img.naturalWidth || !img.naturalHeight) return;
+      applied = true;
+      try {
+        const covers = await this.coversFor(item);
+        // A quiz already in progress still conceals its original answer if the file changes.
+        const concealed = covers.some(cover => cover.id === item.cover.id) ? covers : [...covers, item.cover];
+        this.applyCrop(cropBox, img, x, y, w, h);
+        for (const property of ['left', 'top', 'width', 'height'] as const) masks.style[property] = img.style[property];
+        for (const cover of concealed) {
+          if (!showAnswer || cover.id !== item.cover.id) this.renderConcealer(masks, cover);
+        }
+        cropBox.removeClass('sNr-quiz-crop-loading');
+      } catch (error) {
+        console.error('Slide and Reveal: could not prepare quiz crop', error);
+        parent.createDiv({ text: 'Could not prepare this image safely. Try reopening the quiz.' });
+      }
+    };
     img.onload = applyOnReady;
     img.src = this.app.vault.getResourcePath(tFile);
     if (img.complete && img.naturalWidth > 0) applyOnReady();
@@ -393,7 +419,7 @@ export class QuizModal extends Modal {
         box.style.top = (region.y * 100) + '%';
         box.style.width = (region.w * 100) + '%';
         box.style.height = (region.h * 100) + '%';
-        box.style.borderColor = item.cover.color || this.plugin.settings.defaultColor;
+        box.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
       }
     };
     img.onload = onReady;
@@ -405,7 +431,7 @@ export class QuizModal extends Modal {
    *  Used in full-image quiz previews so labels under unrelated covers
    *  don't leak into the user's view. */
   private renderConcealer(host: HTMLElement, cover: Rect): void {
-    const color = cover.color || this.plugin.settings.defaultColor;
+    const color = safeColor(cover.color || this.plugin.settings.defaultColor);
     const wrap = host.createDiv({ cls: 'sNr-quiz-concealer' });
     wrap.style.left = (cover.x * 100) + '%';
     wrap.style.top = (cover.y * 100) + '%';
@@ -421,14 +447,14 @@ export class QuizModal extends Modal {
       svg.appendChild(poly);
       wrap.appendChild(svg);
     } else {
-      wrap.style.background = color;
+      wrap.style.backgroundColor = color;
     }
   }
 
   /** Outline the cover (label region) on the answer image. Polygon if the
    *  cover has points; bbox rectangle otherwise. */
   private drawAnswerOverlay(host: HTMLElement, cover: Rect): void {
-    const color = cover.color || this.plugin.settings.defaultColor;
+    const color = safeColor(cover.color || this.plugin.settings.defaultColor);
     if (cover.kind === 'polygon' && cover.points) {
       const svg = activeDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.classList.add('sNr-quiz-label-outline');

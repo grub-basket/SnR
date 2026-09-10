@@ -1,13 +1,14 @@
 {
   "name": "slide-and-reveal",
-  "version": "0.5.16",
+  "version": "0.5.17",
   "description": "Obsidian plugin: scroll-to-reveal flashcard study for labeled images.",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node esbuild.config.mjs --prod",
     "dev": "node esbuild.config.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
