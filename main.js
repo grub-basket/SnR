@@ -797,10 +797,16 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.tooltips = /* @__PURE__ */ new Set();
     this.refreshTimer = null;
     this.escScopePushed = false;
+    /** Escape events already handled, so the two Escape paths don't
+     *  double-fire on one key press. */
+    this.handledEscapes = /* @__PURE__ */ new WeakSet();
+    /** Ends an in-progress middle-button pan (null when not panning). */
+    this.stopPan = null;
     this.plugin = plugin;
     this.escScope = new import_obsidian4.Scope(this.app.scope);
     this.escScope.register([], "Escape", (e) => {
       e.preventDefault();
+      this.handleEscape(e);
       return false;
     });
   }
@@ -879,6 +885,14 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         scroller.scrollTop = contentYBefore * ratio - cursorInScrollerY;
       });
     }, { passive: false });
+    this.registerDomEvent(this.containerEl, "mousedown", (e) => {
+      if (e.button !== 1) return;
+      const scroller = this.scrollerEl;
+      if (!scroller || !scroller.contains(e.target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.startPan(e);
+    }, { capture: true });
     const refresh = (file) => {
       if (file instanceof import_obsidian4.TFile && IMG_RE.test(file.path) && this.containsPath(file.path)) this.queueRefresh();
       else if (file instanceof import_obsidian4.TFolder && (this.containsPath(file.path) || this.folderPath.startsWith(file.path + "/"))) this.queueRefresh();
@@ -893,6 +907,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      this.handleEscape(e);
     }, { capture: true });
     this.registerDomEvent(this.containerEl, "keydown", (e) => {
       const key = e.key.toLowerCase();
@@ -910,6 +925,21 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
           e.preventDefault();
           e.stopPropagation();
           void this.deleteSelectedShape();
+          return;
+        }
+      }
+      if (!inField && !mod && !e.altKey && e.key === "Enter" && this.canEdit()) {
+        if (this.rectDraft) {
+          e.preventDefault();
+          e.stopPropagation();
+          const d = this.rectDraft;
+          void this.commitRectDraft({ clientX: d.lastClientX, clientY: d.lastClientY });
+          return;
+        }
+        if (this.polyDraft) {
+          e.preventDefault();
+          e.stopPropagation();
+          void this.commitPolyDraft();
           return;
         }
       }
@@ -956,6 +986,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
   }
   async onClose() {
+    var _a;
+    (_a = this.stopPan) == null ? void 0 : _a.call(this);
     if (this.saveQueued) await this.saveFolderData();
     await this.saveChain;
     this.annotationEpoch++;
@@ -1171,15 +1203,49 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     await this.applyOp(op, "undoStack");
   }
-  handleEscape() {
-    if (this.polyDraft) {
-      this.cancelPolyDraft();
-      return;
-    }
-    const root = this.containerEl.children[1];
-    const tb = root.querySelector(".sNr-rect-toolbar");
-    if (tb) tb.remove();
-    root.querySelectorAll(".sNr-rect.sNr-selected").forEach((r) => r.classList.remove("sNr-selected"));
+  /** Follow the mouse while the middle button is held, scrolling the
+   *  content pane by the distance moved. Reads this.scrollerEl on every
+   *  move so a re-render mid-drag keeps working. */
+  startPan(e) {
+    var _a;
+    (_a = this.stopPan) == null ? void 0 : _a.call(this);
+    const doc = this.containerEl.doc;
+    let lastX = e.clientX;
+    let lastY = e.clientY;
+    const onMove = (ev) => {
+      if ((ev.buttons & 4) === 0) {
+        end();
+        return;
+      }
+      ev.preventDefault();
+      const scroller = this.scrollerEl;
+      if (!scroller) return;
+      scroller.scrollLeft -= ev.clientX - lastX;
+      scroller.scrollTop -= ev.clientY - lastY;
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+    };
+    const onUp = (ev) => {
+      if (ev.button === 1) end();
+    };
+    const end = () => {
+      doc.removeEventListener("mousemove", onMove, true);
+      doc.removeEventListener("mouseup", onUp, true);
+      this.containerEl.removeClass("sNr-panning");
+      this.stopPan = null;
+    };
+    doc.addEventListener("mousemove", onMove, true);
+    doc.addEventListener("mouseup", onUp, true);
+    this.containerEl.addClass("sNr-panning");
+    this.stopPan = end;
+  }
+  /** Escape cancels the shape being drawn (same as right-click). Both
+   *  Escape paths (keymap scope + document capture listener) call this,
+   *  so it only acts once per key press. */
+  handleEscape(e) {
+    if (this.handledEscapes.has(e)) return;
+    this.handledEscapes.add(e);
+    this.cancelDrafts();
   }
   // ---------- Render ----------
   render() {
@@ -1654,6 +1720,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.bindRevealWheel(file, canvas);
     canvas.addEventListener("mousedown", (e) => {
       if (!this.canEdit()) return;
+      if (e.button !== 0 || import_obsidian4.Platform.isMacOS && e.ctrlKey) return;
       if (this.polyDrawingPaths.has(file.path) && (e.target === canvas || e.target === imgEl)) {
         this.addPolyPoint(canvas, file, block, e);
         return;
@@ -1665,6 +1732,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     });
     canvas.addEventListener("click", (e) => {
       if (!this.canEdit() || !this.drawingPaths.has(file.path)) return;
+      if (import_obsidian4.Platform.isMacOS && e.ctrlKey) return;
       if (e.target !== canvas && e.target !== imgEl) return;
       if (e.detail !== 1 && e.detail !== 0) return;
       if (!this.rectDraft || this.rectDraft.canvas !== canvas) {
@@ -1673,6 +1741,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       } else {
         void this.commitRectDraft(e);
       }
+    });
+    canvas.addEventListener("contextmenu", (e) => {
+      var _a, _b;
+      if (((_a = this.rectDraft) == null ? void 0 : _a.canvas) !== canvas && ((_b = this.polyDraft) == null ? void 0 : _b.canvas) !== canvas) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.cancelDrafts();
     });
     canvas.addEventListener("dblclick", (e) => {
       var _a;
@@ -1697,6 +1772,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     ghost.style.left = sx * 100 + "%";
     ghost.style.top = sy * 100 + "%";
     const onMove = (ev) => {
+      if (this.rectDraft) {
+        this.rectDraft.lastClientX = ev.clientX;
+        this.rectDraft.lastClientY = ev.clientY;
+      }
       const rect = canvas.getBoundingClientRect();
       const cx = clamp01((ev.clientX - rect.left) / rect.width);
       const cy = clamp01((ev.clientY - rect.top) / rect.height);
@@ -1710,9 +1789,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       ghost.style.height = h * 100 + "%";
     };
     canvas.addEventListener("mousemove", onMove);
-    this.rectDraft = { file, canvas, sx, sy, ghost, onMove };
+    this.rectDraft = { file, canvas, sx, sy, ghost, onMove, lastClientX: e.clientX, lastClientY: e.clientY };
   }
-  /** Second click: turn the ghost into a real cover. */
+  /** Second click (or Enter at the current cursor): turn the ghost into
+   *  a real cover. */
   async commitRectDraft(e) {
     if (!this.canEdit()) return;
     const draft = this.rectDraft;
@@ -1747,6 +1827,15 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     list.push(rect);
     await this.saveFolderData();
     this.render();
+  }
+  /** Drop whatever shape is mid-draw (rectangle and/or polygon). Draw
+   *  mode itself stays on. Returns true if anything was cancelled. */
+  cancelDrafts() {
+    const had = !!this.rectDraft || !!this.polyDraft;
+    this.cancelRectDraft();
+    this.cancelPolyDraft();
+    if (had) this.refreshHeaderTools();
+    return had;
   }
   /** Discard an in-flight rectangle draft (used when leaving draw mode or
    *  when the user clicks off to a different canvas). */
@@ -1802,7 +1891,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   }
   cancelPolyDraft() {
     if (!this.polyDraft) return;
-    this.polyDraft.block.removeClass("sNr-drafting");
+    const path = this.polyDraft.file.path;
+    if (!this.drawingPaths.has(path) && !this.polyDrawingPaths.has(path)) {
+      this.polyDraft.block.removeClass("sNr-drafting");
+    }
     this.polyDraft.cleanup();
     this.polyDraft = null;
     this.targetDraftCoverId = null;
@@ -1890,7 +1982,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       destination: { kind: "target", coverId }
     };
     this.targetDraftCoverId = coverId;
-    new import_obsidian4.Notice("Click vertices over the structure this label points to, then Finalize. Esc is disabled \u2014 use the Cancel button.");
+    new import_obsidian4.Notice("Click vertices over the structure this label points to, then Finalize or press Enter. Right-click or Esc cancels.");
     block.addClass("sNr-drafting");
     this.refreshHeaderTools();
   }
@@ -2608,7 +2700,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     }
     const editMode = this.canEdit();
     const drawBtn = this.iconBtn(tools, "square", "Rectangle");
-    drawBtn.title = editMode ? "Add rectangle to the focused image (click a corner, move, click again)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
+    drawBtn.title = editMode ? "Add rectangle to the focused image (click a corner, move, click again or press Enter; right-click or Esc cancels)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass("sNr-active");
     if (!file || !editMode) drawBtn.disabled = true;
     drawBtn.onclick = () => {
@@ -2623,7 +2715,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       this.render();
     };
     const polyBtn = this.iconBtn(tools, "pentagon", "Polygon");
-    polyBtn.title = editMode ? "Add polygon to the focused image (click vertices, then Finalize)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
+    polyBtn.title = editMode ? "Add polygon to the focused image (click vertices, then Finalize or press Enter; right-click or Esc cancels)" : "Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.";
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass("sNr-active");
     if (!file || !editMode) polyBtn.disabled = true;
     polyBtn.onclick = () => {

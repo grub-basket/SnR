@@ -107,12 +107,18 @@ always permits edits, provided annotations loaded safely.
 
 ### Drawing
 
-- Click **Rectangle** in the header, then drag on the focused image to
-  draw a rectangular cover.
+- Click **Rectangle** in the header, then click one corner on the
+  focused image, move the mouse, and click the opposite corner (or
+  press **Enter**) to draw a rectangular cover.
 - Click **Polygon** in the header, then click vertices on the image to
-  build a freeform shape. **Finalize** when done, or **Cancel** to
-  bail. The Esc key is intentionally disabled inside this view (so it
-  can't switch tabs by accident), hence the explicit Cancel button.
+  build a freeform shape. **Finalize** (or **Enter**, or double-click)
+  when done.
+- Changed your mind mid-shape? **Right-click** or press **Esc** to throw
+  away the shape you're drawing (or use the polygon **Cancel** button).
+  You stay in draw mode.
+- While drawing, existing covers are click-through, so a new cover can
+  start or end on top of an old one. Leave draw mode to select or move
+  existing covers.
 - Both drawing modes are sticky — you stay in draw mode until you
   click the button again, so you can keep adding shapes without
   re-engaging.
@@ -272,7 +278,12 @@ text/number input.
 | Delete / Backspace     | Delete the selected shape or target region   |
 | ← / →                  | Zoom out / in (configurable, configurable step) |
 | ↑ / ↓                  | Hide / Reveal one step on the focused image (always active in study mode; invertible) |
-| Esc                    | **Disabled** so it can't switch tabs. Drafting has a visible Cancel button. |
+| Enter                  | Finish the rectangle / polygon being drawn   |
+| Esc                    | Cancel the shape being drawn (never switches tabs) |
+
+Mouse: **right-click** while drawing cancels the shape in progress.
+**Hold the middle button and drag** to pan the image list (handy when
+zoomed past 100%).
 
 Right-click on a polygon vertex deletes it (minimum 3 points).
 Double-click an image canvas while polygon-drafting finalizes the

@@ -1,4 +1,4 @@
-import { ItemView, Notice, Scope, TAbstractFile, TFile, TFolder, WorkspaceLeaf, ViewStateResult, setIcon } from 'obsidian';
+import { ItemView, Notice, Platform, Scope, TAbstractFile, TFile, TFolder, WorkspaceLeaf, ViewStateResult, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
 import { VIEW_TYPE, IMG_RE, ANNOT_FILE, FolderData, Rect, Point, TargetRegion } from './types';
 import { clamp01, clampPoints, joinPath, relTo, safeColor, uid } from './util';
@@ -69,6 +69,10 @@ export class SlideAndRevealView extends ItemView {
     sy: number;
     ghost: HTMLElement;
     onMove: (e: MouseEvent) => void;
+    /** Last known cursor position (client coords), so Enter can commit
+     *  the box at wherever the mouse currently is. */
+    lastClientX: number;
+    lastClientY: number;
   } | null = null;
 
   // Undo / redo. Two op types: a folderData snapshot, or a vault file
@@ -111,6 +115,11 @@ export class SlideAndRevealView extends ItemView {
   // is the active one. Pushed/popped on active-leaf changes.
   private escScope!: Scope;
   private escScopePushed = false;
+  /** Escape events already handled, so the two Escape paths don't
+   *  double-fire on one key press. */
+  private handledEscapes = new WeakSet<KeyboardEvent>();
+  /** Ends an in-progress middle-button pan (null when not panning). */
+  private stopPan: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: SlideAndRevealPlugin) {
     super(leaf);
@@ -121,6 +130,7 @@ export class SlideAndRevealView extends ItemView {
     this.escScope = new Scope(this.app.scope);
     this.escScope.register([], 'Escape', (e) => {
       e.preventDefault();
+      this.handleEscape(e);
       return false; // tell Obsidian we consumed it
     });
   }
@@ -219,6 +229,19 @@ export class SlideAndRevealView extends ItemView {
       });
     }, { passive: false });
 
+    // Middle-button drag pans the image list, like the hand tool in a PDF
+    // viewer. Capture phase so the press never reaches cover / handle /
+    // vertex mousedown handlers (several stop propagation and don't check
+    // the button, so they'd otherwise start a move or resize).
+    this.registerDomEvent(this.containerEl, 'mousedown', (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      const scroller = this.scrollerEl;
+      if (!scroller || !scroller.contains(e.target as Node)) return;
+      e.preventDefault(); // also stops the Windows/Linux autoscroll widget
+      e.stopPropagation();
+      this.startPan(e);
+    }, { capture: true });
+
     const refresh = (file: TAbstractFile) => {
       if (file instanceof TFile && IMG_RE.test(file.path) && this.containsPath(file.path)) this.queueRefresh();
       else if (file instanceof TFolder && (this.containsPath(file.path) || this.folderPath.startsWith(file.path + '/'))) this.queueRefresh();
@@ -239,6 +262,7 @@ export class SlideAndRevealView extends ItemView {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+      this.handleEscape(e);
     }, { capture: true });
 
     // Other shortcuts (Mod+Z / Mod+Shift+Z / Mod+Y / arrows / Del)
@@ -260,6 +284,24 @@ export class SlideAndRevealView extends ItemView {
           e.preventDefault();
           e.stopPropagation();
           void this.deleteSelectedShape();
+          return;
+        }
+      }
+      // Enter finishes the shape being drawn — an alternative to the
+      // second click (rectangle, at the current cursor) or double-click
+      // (polygon). Handy when the spot to click is awkward to reach.
+      if (!inField && !mod && !e.altKey && e.key === 'Enter' && this.canEdit()) {
+        if (this.rectDraft) {
+          e.preventDefault();
+          e.stopPropagation();
+          const d = this.rectDraft;
+          void this.commitRectDraft({ clientX: d.lastClientX, clientY: d.lastClientY });
+          return;
+        }
+        if (this.polyDraft) {
+          e.preventDefault();
+          e.stopPropagation();
+          void this.commitPolyDraft();
           return;
         }
       }
@@ -322,6 +364,7 @@ export class SlideAndRevealView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.stopPan?.();
     if (this.saveQueued) await this.saveFolderData();
     await this.saveChain;
     this.annotationEpoch++;
@@ -543,12 +586,45 @@ export class SlideAndRevealView extends ItemView {
     await this.applyOp(op, 'undoStack');
   }
 
-  handleEscape(): void {
-    if (this.polyDraft) { this.cancelPolyDraft(); return; }
-    const root = this.containerEl.children[1] as HTMLElement;
-    const tb = root.querySelector('.sNr-rect-toolbar');
-    if (tb) tb.remove();
-    root.querySelectorAll('.sNr-rect.sNr-selected').forEach((r) => r.classList.remove('sNr-selected'));
+  /** Follow the mouse while the middle button is held, scrolling the
+   *  content pane by the distance moved. Reads this.scrollerEl on every
+   *  move so a re-render mid-drag keeps working. */
+  private startPan(e: MouseEvent): void {
+    this.stopPan?.();
+    const doc = this.containerEl.doc;
+    let lastX = e.clientX;
+    let lastY = e.clientY;
+    const onMove = (ev: MouseEvent) => {
+      // Button released outside the window (no mouseup reached us).
+      if ((ev.buttons & 4) === 0) { end(); return; }
+      ev.preventDefault();
+      const scroller = this.scrollerEl;
+      if (!scroller) return;
+      scroller.scrollLeft -= ev.clientX - lastX;
+      scroller.scrollTop -= ev.clientY - lastY;
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+    };
+    const onUp = (ev: MouseEvent) => { if (ev.button === 1) end(); };
+    const end = () => {
+      doc.removeEventListener('mousemove', onMove, true);
+      doc.removeEventListener('mouseup', onUp, true);
+      this.containerEl.removeClass('sNr-panning');
+      this.stopPan = null;
+    };
+    doc.addEventListener('mousemove', onMove, true);
+    doc.addEventListener('mouseup', onUp, true);
+    this.containerEl.addClass('sNr-panning');
+    this.stopPan = end;
+  }
+
+  /** Escape cancels the shape being drawn (same as right-click). Both
+   *  Escape paths (keymap scope + document capture listener) call this,
+   *  so it only acts once per key press. */
+  handleEscape(e: KeyboardEvent): void {
+    if (this.handledEscapes.has(e)) return;
+    this.handledEscapes.add(e);
+    this.cancelDrafts();
   }
 
   // ---------- Render ----------
@@ -1150,6 +1226,10 @@ export class SlideAndRevealView extends ItemView {
 
     canvas.addEventListener('mousedown', (e: MouseEvent) => {
       if (!this.canEdit()) return;
+      // Only the left button places polygon points. Right-click cancels
+      // the draft (contextmenu below) and middle-drag pans the view. On
+      // macOS, Ctrl+click is a right-click too.
+      if (e.button !== 0 || (Platform.isMacOS && e.ctrlKey)) return;
       // Rectangle drawing is click-move-click (not click-and-drag), handled
       // in the 'click' listener below. Skip mousedown for that mode so we
       // don't fight the click semantics or eat text selection.
@@ -1175,6 +1255,9 @@ export class SlideAndRevealView extends ItemView {
     // second click commits.
     canvas.addEventListener('click', (e: MouseEvent) => {
       if (!this.canEdit() || !this.drawingPaths.has(file.path)) return;
+      // macOS Ctrl+click is a right-click (cancels via contextmenu); don't
+      // let a trailing click start a fresh corner.
+      if (Platform.isMacOS && e.ctrlKey) return;
       if (e.target !== canvas && e.target !== imgEl) return;
       // Ignore clicks that are actually the tail end of a dblclick (which
       // has its own polygon-commit meaning elsewhere).
@@ -1186,6 +1269,16 @@ export class SlideAndRevealView extends ItemView {
       } else {
         void this.commitRectDraft(e);
       }
+    });
+
+    // Right-click while drawing throws away the shape in progress (the
+    // first corner of a rectangle, or the points placed so far of a
+    // polygon). With no draft on this image, right-click is left alone.
+    canvas.addEventListener('contextmenu', (e: MouseEvent) => {
+      if (this.rectDraft?.canvas !== canvas && this.polyDraft?.canvas !== canvas) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.cancelDrafts();
     });
 
     // Double-click on canvas (not on rect) commits poly
@@ -1215,6 +1308,10 @@ export class SlideAndRevealView extends ItemView {
     // inline here would trip the store linter's no-static-styles rule.
 
     const onMove = (ev: MouseEvent) => {
+      if (this.rectDraft) {
+        this.rectDraft.lastClientX = ev.clientX;
+        this.rectDraft.lastClientY = ev.clientY;
+      }
       const rect = canvas.getBoundingClientRect();
       const cx = clamp01((ev.clientX - rect.left) / rect.width);
       const cy = clamp01((ev.clientY - rect.top) / rect.height);
@@ -1228,11 +1325,12 @@ export class SlideAndRevealView extends ItemView {
       ghost.style.height = (h * 100) + '%';
     };
     canvas.addEventListener('mousemove', onMove);
-    this.rectDraft = { file, canvas, sx, sy, ghost, onMove };
+    this.rectDraft = { file, canvas, sx, sy, ghost, onMove, lastClientX: e.clientX, lastClientY: e.clientY };
   }
 
-  /** Second click: turn the ghost into a real cover. */
-  private async commitRectDraft(e: MouseEvent): Promise<void> {
+  /** Second click (or Enter at the current cursor): turn the ghost into
+   *  a real cover. */
+  private async commitRectDraft(e: { clientX: number; clientY: number }): Promise<void> {
     if (!this.canEdit()) return;
     const draft = this.rectDraft;
     if (!draft) return;
@@ -1265,6 +1363,16 @@ export class SlideAndRevealView extends ItemView {
     // Stay in rectangle-draw mode so the user can keep adding without
     // re-clicking the button. Click 'Rectangle' again to exit.
     this.render();
+  }
+
+  /** Drop whatever shape is mid-draw (rectangle and/or polygon). Draw
+   *  mode itself stays on. Returns true if anything was cancelled. */
+  cancelDrafts(): boolean {
+    const had = !!this.rectDraft || !!this.polyDraft;
+    this.cancelRectDraft();
+    this.cancelPolyDraft();
+    if (had) this.refreshHeaderTools();
+    return had;
   }
 
   /** Discard an in-flight rectangle draft (used when leaving draw mode or
@@ -1321,7 +1429,13 @@ export class SlideAndRevealView extends ItemView {
 
   cancelPolyDraft(): void {
     if (!this.polyDraft) return;
-    this.polyDraft.block.removeClass('sNr-drafting');
+    // Keep the drafting outline (and click-through covers) if the image
+    // is still in Rectangle/Polygon mode — only the in-progress shape is
+    // being dropped, not the mode.
+    const path = this.polyDraft.file.path;
+    if (!this.drawingPaths.has(path) && !this.polyDrawingPaths.has(path)) {
+      this.polyDraft.block.removeClass('sNr-drafting');
+    }
     this.polyDraft.cleanup();
     this.polyDraft = null;
     this.targetDraftCoverId = null;
@@ -1409,7 +1523,7 @@ export class SlideAndRevealView extends ItemView {
       destination: { kind: 'target', coverId },
     };
     this.targetDraftCoverId = coverId;
-    new Notice('Click vertices over the structure this label points to, then Finalize. Esc is disabled — use the Cancel button.');
+    new Notice('Click vertices over the structure this label points to, then Finalize or press Enter. Right-click or Esc cancels.');
     // DO NOT full-render here: render() rebuilds the canvas, which would
     // orphan polyDraft.canvas and make the next click create a brand-new
     // newShape-destination draft (and silently drop the target binding).
@@ -2245,7 +2359,7 @@ export class SlideAndRevealView extends ItemView {
     const editMode = this.canEdit();
     const drawBtn = this.iconBtn(tools, 'square', 'Rectangle');
     drawBtn.title = editMode
-      ? 'Add rectangle to the focused image (click a corner, move, click again)'
+      ? 'Add rectangle to the focused image (click a corner, move, click again or press Enter; right-click or Esc cancels)'
       : 'Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.';
     if (file && this.drawingPaths.has(file.path)) drawBtn.addClass('sNr-active');
     if (!file || !editMode) drawBtn.disabled = true;
@@ -2264,7 +2378,7 @@ export class SlideAndRevealView extends ItemView {
 
     const polyBtn = this.iconBtn(tools, 'pentagon', 'Polygon');
     polyBtn.title = editMode
-      ? 'Add polygon to the focused image (click vertices, then Finalize)'
+      ? 'Add polygon to the focused image (click vertices, then Finalize or press Enter; right-click or Esc cancels)'
       : 'Study edits are locked. Switch to Edit mode or enable Allow edits in Study mode.';
     if (file && this.polyDrawingPaths.has(file.path)) polyBtn.addClass('sNr-active');
     if (!file || !editMode) polyBtn.disabled = true;

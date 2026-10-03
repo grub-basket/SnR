@@ -540,6 +540,15 @@
 .sNr-poly-draft circle { fill: #3b82f6; }
 .sNr-block.sNr-drafting { outline: 2px solid #3b82f6; }
 .sNr-block.sNr-drafting .sNr-canvas { cursor: crosshair; }
+/* Middle-button drag (pan) — grabbing hand everywhere in the content
+ * pane, overriding the crosshair / move cursors while it lasts. */
+.sNr-panning .sNr-content,
+.sNr-panning .sNr-content * { cursor: grabbing !important; }
+
+/* While drawing, existing covers (and their handles/vertices/overlays) are
+ * click-through, so a new box can start or finish on top of an old one.
+ * Leave Rectangle/Polygon mode to select or move existing covers again. */
+.sNr-block.sNr-drafting .sNr-canvas * { pointer-events: none; }
 /* Subtle highlight on whichever slide the header tools currently act on.
  * Drafting outline takes precedence (sNr-drafting rule is more specific
  * by order). */
