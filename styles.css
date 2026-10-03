@@ -18,6 +18,18 @@
   z-index: 5;
 }
 .sNr-header h3 { margin: 0; font-size: 1em; word-break: break-all; }
+/* Shown when saving is paused (load failure / conflicting change). Needs to
+ * read as an error, not a stray paragraph in the header. */
+.sNr-save-warning {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-error);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--background-modifier-error-hover, var(--background-secondary));
+  color: var(--text-normal);
+}
+.sNr-save-warning p { margin: 0; flex: 1 1 200px; color: var(--text-error); font-weight: 600; }
 .sNr-header-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .sNr-mode-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -29,7 +41,10 @@
 }
 
 .sNr-header-tools {
-  display: flex; gap: 4px; align-items: center;
+  /* Wrap onto extra lines in narrow panes (phone, split view) instead of
+   * running past the pane edge where the last buttons got clipped. */
+  display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+  min-width: 0;
   padding-left: 8px;
   border-left: 1px solid var(--background-modifier-border);
   margin-left: 4px;
@@ -84,12 +99,18 @@
 
 .sNr-rect-toolbar {
   position: fixed;
-  display: flex; gap: 6px; align-items: center;
+  /* Wrap instead of running off a phone-width screen (15 controls are
+   * ~560px on mobile); the reposition code clamps it inside the window. */
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   padding: 6px 8px;
   border-radius: 8px;
-  z-index: 9999;
+  /* Popover layer: above the view, but under Obsidian modals and the
+   * command palette (9999 floated it on top of them). */
+  z-index: var(--layer-popover, 30);
   font-size: 12px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.04);
   min-height: 38px;
@@ -237,7 +258,11 @@
 .sNr-body { flex: 1 1 auto; display: flex; min-height: 0; }
 
 .sNr-sidebar {
-  flex: 0 0 var(--sNr-sidebar-w);
+  /* Saved width, but allowed to shrink and capped at 40% of the pane: a
+   * fixed 200px sidebar in a narrow pane (phone, split view) squeezed the
+   * image column down to a few pixels wide. */
+  flex: 0 1 var(--sNr-sidebar-w);
+  max-width: 40%;
   overflow-y: auto;
   border-right: 1px solid var(--background-modifier-border);
   padding: 6px;
@@ -303,7 +328,9 @@
 .sNr-divider:hover, .sNr-divider.sNr-dragging { background: var(--interactive-accent); }
 
 .sNr-content {
-  flex: 1 1 auto;
+  /* Basis 0: take the space left after the sidebar instead of competing
+   * with it by content size (which shrank the sidebar even in wide panes). */
+  flex: 1 1 0;
   overflow-y: auto;
   /* Allow horizontal scroll when zoom is > 100% — the block's `width`
      can exceed the content-pane width. */
@@ -399,11 +426,13 @@
   cursor: grab;
   z-index: 2;
   transition: top 0.12s ease, opacity 0.2s ease;
-  /* Variable-driven opacity — JS sets --sNr-rail-thumb-opacity so :hover
-     can override by re-setting the same variable (no !important needed). */
+  /* Variable-driven opacity — JS sets --sNr-rail-thumb-opacity inline to
+     fade the thumb as progress advances; :hover/:active below restore 1. */
   opacity: var(--sNr-rail-thumb-opacity, 1);
 }
-.sNr-rail-thumb:hover { --sNr-rail-thumb-opacity: 1; }
+/* The inline --sNr-rail-thumb-opacity beats any stylesheet rule that
+ * re-sets the variable, so :hover overrides the opacity itself instead. */
+.sNr-rail-thumb:hover, .sNr-rail-thumb:active { opacity: 1; }
 .sNr-rail-thumb:active { cursor: grabbing; transition: none; }
 .sNr-rail-track { cursor: pointer; }
 .sNr-rail-label {
@@ -529,7 +558,10 @@
 .sNr-mode-study .sNr-rect { cursor: default; }
 .sNr-mode-study .sNr-rect .sNr-handle { display: none; }
 .sNr-mode-study .sNr-vertex { display: none; }
-.sNr-mode-study .sNr-target-region { cursor: default; }
+/* Edits locked: a target region can't be selected or moved, so let clicks
+ * through — otherwise it sat on top of covers and swallowed the
+ * double-click that reveals them. */
+.sNr-mode-study .sNr-target-region { cursor: default; pointer-events: none; }
 
 /* Polygon-draft overlay */
 .sNr-poly-draft {
@@ -576,7 +608,11 @@
 }
 
 /* Cross-diagram quiz modals */
+/* Obsidian's default dialog is ~560px, but the quiz sizes its images up to
+ * 640px (crop) / 720px (whole image), which overflowed sideways. Phones
+ * keep Obsidian's full-screen dialog. */
 .sNr-quiz-modal { max-width: 800px; }
+body:not(.is-phone) .sNr-quiz-modal { width: min(800px, calc(100vw - 40px)); }
 .sNr-quiz-scope-row {
   display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap;
 }

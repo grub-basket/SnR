@@ -120,6 +120,9 @@ export class SlideAndRevealView extends ItemView {
   private handledEscapes = new WeakSet<KeyboardEvent>();
   /** Ends an in-progress middle-button pan (null when not panning). */
   private stopPan: (() => void) | null = null;
+  /** Image path the header tools were last built for (see the scroll
+   *  handler: it only rebuilds them when this changes). */
+  private headerToolsFocus: string | null | undefined = undefined;
 
   constructor(leaf: WorkspaceLeaf, plugin: SlideAndRevealPlugin) {
     super(leaf);
@@ -177,7 +180,12 @@ export class SlideAndRevealView extends ItemView {
     // claim a hotkey) with the document capture-phase listener below as
     // a backup.
     this.syncEscScope();
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.syncEscScope()));
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+      this.syncEscScope();
+      // The cover toolbar is attached to document.body, so it would stay
+      // on screen over whatever tab the user switched to. Deselect.
+      if (this.app.workspace.getActiveViewOfType(SlideAndRevealView) !== this) this.clearSelection();
+    }));
 
     // Trackpad pinch / Ctrl+wheel zooms anywhere in the view. Bind on
     // containerEl so it works over the sidebar, header, content pane,
@@ -842,6 +850,9 @@ export class SlideAndRevealView extends ItemView {
     // scheduleSave throttles to ~250ms so continuous scrolling is cheap.
     // Also refresh the header tools' active state since the focused image
     // can change as you scroll.
+    // Only rebuild the header when the focused image actually changes:
+    // refreshHeaderTools() empties and recreates the buttons, so doing it
+    // every scroll frame could swallow a click made during momentum scroll.
     let scrollRefreshScheduled = false;
     this.scrollerEl.addEventListener('scroll', () => {
       this.folderData.scrollTop = this.scrollerEl.scrollTop;
@@ -850,6 +861,8 @@ export class SlideAndRevealView extends ItemView {
         scrollRefreshScheduled = true;
         window.requestAnimationFrame(() => {
           scrollRefreshScheduled = false;
+          const focus = this.currentImageContext()?.file.path ?? null;
+          if (focus === this.headerToolsFocus) return;
           this.refreshHeaderTools();
         });
       }
@@ -970,7 +983,8 @@ export class SlideAndRevealView extends ItemView {
       // Place to the right; flip to the left if there isn't room.
       const tipW = tipEl.offsetWidth;
       let left = r.right + 8;
-      if (left + tipW > window.innerWidth - 8) left = r.left - tipW - 8;
+      // thumb.win: the window this view lives in (a popout can be narrower).
+      if (left + tipW > thumb.win.innerWidth - 8) left = r.left - tipW - 8;
       tipEl.style.left = left + 'px';
       tipEl.style.top = (r.top + 4) + 'px';
     };
@@ -2322,9 +2336,10 @@ export class SlideAndRevealView extends ItemView {
     tools.empty();
     const ctx = this.currentImageContext();
     const file = ctx?.file ?? null;
+    this.headerToolsFocus = file?.path ?? null;
 
-    // Mark the currently-focused block so CSS can highlight it. Cheap to
-    // do here because refreshHeaderTools already fires on every scroll-rAF.
+    // Mark the currently-focused block so CSS can highlight it. The scroll
+    // handler only calls this when the focused image changes.
     if (this.scrollerEl) {
       const blocks = Array.from(this.scrollerEl.querySelectorAll('.sNr-block')) as HTMLElement[];
       const focusedPath = ctx ? ctx.file.path : null;

@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.5.19 — 2026-10-02
+
+UI glitch fixes from a sweep of every screen in edit and study mode, light and dark themes, narrow panes and phone layout.
+
+- Narrow panes and phones: the header buttons wrap instead of being cut off at the edge, and the thumbnail sidebar shrinks (to at most 40% of the pane) so the image no longer gets squeezed to a sliver.
+- The floating cover toolbar wraps to fit phone screens, sits under dialogs and the command palette instead of on top of them, and goes away when you switch tabs.
+- The reveal-rail thumb returns to full brightness on hover, as intended.
+- Header buttons stay put while you scroll, so a click during scrolling is no longer lost.
+- With edits locked in Study mode, a target region no longer blocks double-clicking the cover underneath it.
+- The "saving is paused" warning is now styled as an error so it stands out.
+- Thumbnail tooltips flip correctly in narrower popout windows.
+- Quiz: in "Show whole image" mode the labels no longer flash before they are covered; images that fail to load show a message instead of a blank space; the quiz window is wide enough for its images.
+
+AI assistance: Claude (model: Claude Opus 5.5).
+
 ## 0.5.18 — 2026-10-02
 
 - Hold the middle mouse button and drag to pan the image list, like the hand tool in a PDF viewer. Handy when zoomed past 100%.

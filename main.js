@@ -610,6 +610,10 @@ var QuizModal = class extends import_obsidian3.Modal {
         parent.createDiv({ text: "Could not prepare this image safely. Try reopening the quiz." });
       }
     };
+    img.onerror = () => {
+      cropBox.remove();
+      parent.createDiv({ text: "Could not load image: " + item.imagePath });
+    };
     img.onload = applyOnReady;
     img.src = this.app.vault.getResourcePath(tFile);
     if (img.complete && img.naturalWidth > 0) applyOnReady();
@@ -625,38 +629,52 @@ var QuizModal = class extends import_obsidian3.Modal {
       return;
     }
     const imgWrap = parent.createDiv({ cls: "sNr-quiz-answer-img" });
+    imgWrap.addClass("sNr-quiz-crop-loading");
     const img = imgWrap.createEl("img");
+    let applied = false;
     const onReady = async () => {
-      const natW = img.naturalWidth, natH = img.naturalHeight;
-      const MAX_W = Math.min(720, window.innerWidth - 120);
-      const MAX_H = Math.min(520, window.innerHeight - 280);
-      const scale = Math.min(MAX_W / natW, MAX_H / natH);
-      const dispW = natW * scale, dispH = natH * scale;
-      imgWrap.style.width = dispW + "px";
-      imgWrap.style.height = dispH + "px";
-      img.style.width = dispW + "px";
-      img.style.height = dispH + "px";
-      const covers = await this.coversFor(item);
-      for (const c of covers) {
-        const isAnswer = outlineCover && c.id === item.cover.id;
-        if (isAnswer) {
-          this.drawAnswerOverlay(imgWrap, c);
-        } else {
-          this.renderConcealer(imgWrap, c);
+      if (applied || !img.naturalWidth || !img.naturalHeight) return;
+      applied = true;
+      try {
+        const natW = img.naturalWidth, natH = img.naturalHeight;
+        const MAX_W = Math.min(720, window.innerWidth - 120);
+        const MAX_H = Math.min(520, window.innerHeight - 280);
+        const scale = Math.min(MAX_W / natW, MAX_H / natH);
+        const dispW = natW * scale, dispH = natH * scale;
+        imgWrap.style.width = dispW + "px";
+        imgWrap.style.height = dispH + "px";
+        img.style.width = dispW + "px";
+        img.style.height = dispH + "px";
+        const covers = await this.coversFor(item);
+        for (const c of covers) {
+          const isAnswer = outlineCover && c.id === item.cover.id;
+          if (isAnswer) {
+            this.drawAnswerOverlay(imgWrap, c);
+          } else {
+            this.renderConcealer(imgWrap, c);
+          }
         }
+        if (!outlineCover) {
+          const box2 = imgWrap.createDiv({ cls: "sNr-quiz-label-outline-rect" });
+          box2.style.left = region.x * 100 + "%";
+          box2.style.top = region.y * 100 + "%";
+          box2.style.width = region.w * 100 + "%";
+          box2.style.height = region.h * 100 + "%";
+          box2.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
+        }
+        imgWrap.removeClass("sNr-quiz-crop-loading");
+      } catch (error) {
+        console.error("Slide and Reveal: could not prepare quiz image", error);
+        parent.createDiv({ text: "Could not prepare this image safely. Try reopening the quiz." });
       }
-      if (!outlineCover) {
-        const box2 = imgWrap.createDiv({ cls: "sNr-quiz-label-outline-rect" });
-        box2.style.left = region.x * 100 + "%";
-        box2.style.top = region.y * 100 + "%";
-        box2.style.width = region.w * 100 + "%";
-        box2.style.height = region.h * 100 + "%";
-        box2.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
-      }
+    };
+    img.onerror = () => {
+      imgWrap.remove();
+      parent.createDiv({ text: "Could not load image: " + item.imagePath });
     };
     img.onload = onReady;
     img.src = this.app.vault.getResourcePath(tFile);
-    if (img.complete && img.naturalWidth > 0) onReady();
+    if (img.complete && img.naturalWidth > 0) void onReady();
   }
   /** Opaque concealer overlay matching a cover's shape (rect or polygon).
    *  Used in full-image quiz previews so labels under unrelated covers
@@ -802,6 +820,9 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     this.handledEscapes = /* @__PURE__ */ new WeakSet();
     /** Ends an in-progress middle-button pan (null when not panning). */
     this.stopPan = null;
+    /** Image path the header tools were last built for (see the scroll
+     *  handler: it only rebuilds them when this changes). */
+    this.headerToolsFocus = void 0;
     this.plugin = plugin;
     this.escScope = new import_obsidian4.Scope(this.app.scope);
     this.escScope.register([], "Escape", (e) => {
@@ -856,7 +877,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
   async onOpen() {
     this.render();
     this.syncEscScope();
-    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncEscScope()));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+      this.syncEscScope();
+      if (this.app.workspace.getActiveViewOfType(_SlideAndRevealView) !== this) this.clearSelection();
+    }));
     this.registerDomEvent(this.containerEl, "wheel", (e) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
@@ -1410,7 +1434,10 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (!scrollRefreshScheduled) {
         scrollRefreshScheduled = true;
         window.requestAnimationFrame(() => {
+          var _a2, _b;
           scrollRefreshScheduled = false;
+          const focus = (_b = (_a2 = this.currentImageContext()) == null ? void 0 : _a2.file.path) != null ? _b : null;
+          if (focus === this.headerToolsFocus) return;
           this.refreshHeaderTools();
         });
       }
@@ -1505,7 +1532,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       const r = thumb.getBoundingClientRect();
       const tipW = tipEl.offsetWidth;
       let left = r.right + 8;
-      if (left + tipW > window.innerWidth - 8) left = r.left - tipW - 8;
+      if (left + tipW > thumb.win.innerWidth - 8) left = r.left - tipW - 8;
       tipEl.style.left = left + "px";
       tipEl.style.top = r.top + 4 + "px";
     };
@@ -2674,12 +2701,13 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
    *  whichever image is currently at the top of the visible area
    *  (currentImageContext). Called on render and on scroll. */
   refreshHeaderTools() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const tools = this.headerToolsEl;
     if (!tools) return;
     tools.empty();
     const ctx = this.currentImageContext();
     const file = (_a = ctx == null ? void 0 : ctx.file) != null ? _a : null;
+    this.headerToolsFocus = (_b = file == null ? void 0 : file.path) != null ? _b : null;
     if (this.scrollerEl) {
       const blocks = Array.from(this.scrollerEl.querySelectorAll(".sNr-block"));
       const focusedPath = ctx ? ctx.file.path : null;
@@ -2729,8 +2757,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       }
       this.render();
     };
-    const draftingFile = (_c = (_b = this.polyDraft) == null ? void 0 : _b.file) != null ? _c : null;
-    const isTargetDrafting = ((_d = this.polyDraft) == null ? void 0 : _d.destination.kind) === "target";
+    const draftingFile = (_d = (_c = this.polyDraft) == null ? void 0 : _c.file) != null ? _d : null;
+    const isTargetDrafting = ((_e = this.polyDraft) == null ? void 0 : _e.destination.kind) === "target";
     const regularDraftingActive = !!(draftingFile && this.polyDrawingPaths.has(draftingFile.path));
     if (this.polyDraft && (regularDraftingActive || isTargetDrafting)) {
       const doneBtn = tools.createEl("button", { cls: "sNr-iconbtn sNr-iconbtn-icon-only sNr-poly-done" });

@@ -365,6 +365,12 @@ export class QuizModal extends Modal {
         parent.createDiv({ text: 'Could not prepare this image safely. Try reopening the quiz.' });
       }
     };
+    // Without this the crop box stayed hidden (loading class) forever and
+    // the question showed with nothing under it.
+    img.onerror = () => {
+      cropBox.remove();
+      parent.createDiv({ text: 'Could not load image: ' + item.imagePath });
+    };
     img.onload = applyOnReady;
     img.src = this.app.vault.getResourcePath(tFile);
     if (img.complete && img.naturalWidth > 0) applyOnReady();
@@ -383,48 +389,66 @@ export class QuizModal extends Modal {
     const tFile = getImage(this.app, item.imagePath);
     if (!tFile) { parent.createDiv({ text: 'Image missing: ' + item.imagePath }); return; }
     const imgWrap = parent.createDiv({ cls: 'sNr-quiz-answer-img' });
+    // Hidden until the concealers are in place — otherwise the bare image
+    // (every label, i.e. the answers) flashes while coversFor() reads disk.
+    imgWrap.addClass('sNr-quiz-crop-loading');
     const img = imgWrap.createEl('img');
+    // onload and the img.complete check below can both fire for a cached
+    // image; run once so overlays aren't stacked twice.
+    let applied = false;
     const onReady = async () => {
-      const natW = img.naturalWidth, natH = img.naturalHeight;
-      const MAX_W = Math.min(720, window.innerWidth - 120);
-      const MAX_H = Math.min(520, window.innerHeight - 280);
-      const scale = Math.min(MAX_W / natW, MAX_H / natH);
-      const dispW = natW * scale, dispH = natH * scale;
-      imgWrap.style.width = dispW + 'px';
-      imgWrap.style.height = dispH + 'px';
-      img.style.width = dispW + 'px';
-      img.style.height = dispH + 'px';
+      if (applied || !img.naturalWidth || !img.naturalHeight) return;
+      applied = true;
+      try {
+        const natW = img.naturalWidth, natH = img.naturalHeight;
+        const MAX_W = Math.min(720, window.innerWidth - 120);
+        const MAX_H = Math.min(520, window.innerHeight - 280);
+        const scale = Math.min(MAX_W / natW, MAX_H / natH);
+        const dispW = natW * scale, dispH = natH * scale;
+        imgWrap.style.width = dispW + 'px';
+        imgWrap.style.height = dispH + 'px';
+        img.style.width = dispW + 'px';
+        img.style.height = dispH + 'px';
 
-      // Render concealer overlays so the user can't just read every label
-      // when in full-image mode. In prompt mode (outlineCover=false), keep
-      // every cover concealed. In answer mode (outlineCover=true), the
-      // cover being asked about is shown as an outline only — every other
-      // cover stays concealed so unrelated labels don't leak.
-      const covers = await this.coversFor(item);
-      for (const c of covers) {
-        const isAnswer = outlineCover && c.id === item.cover.id;
-        if (isAnswer) {
-          this.drawAnswerOverlay(imgWrap, c);
-        } else {
-          this.renderConcealer(imgWrap, c);
+        // Render concealer overlays so the user can't just read every label
+        // when in full-image mode. In prompt mode (outlineCover=false), keep
+        // every cover concealed. In answer mode (outlineCover=true), the
+        // cover being asked about is shown as an outline only — every other
+        // cover stays concealed so unrelated labels don't leak.
+        const covers = await this.coversFor(item);
+        for (const c of covers) {
+          const isAnswer = outlineCover && c.id === item.cover.id;
+          if (isAnswer) {
+            this.drawAnswerOverlay(imgWrap, c);
+          } else {
+            this.renderConcealer(imgWrap, c);
+          }
         }
-      }
 
-      if (!outlineCover) {
-        // Prompt: also draw the target region outline so the user knows
-        // which part of the (still-fully-concealed) image they're being
-        // asked to identify.
-        const box = imgWrap.createDiv({ cls: 'sNr-quiz-label-outline-rect' });
-        box.style.left = (region.x * 100) + '%';
-        box.style.top = (region.y * 100) + '%';
-        box.style.width = (region.w * 100) + '%';
-        box.style.height = (region.h * 100) + '%';
-        box.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
+        if (!outlineCover) {
+          // Prompt: also draw the target region outline so the user knows
+          // which part of the (still-fully-concealed) image they're being
+          // asked to identify.
+          const box = imgWrap.createDiv({ cls: 'sNr-quiz-label-outline-rect' });
+          box.style.left = (region.x * 100) + '%';
+          box.style.top = (region.y * 100) + '%';
+          box.style.width = (region.w * 100) + '%';
+          box.style.height = (region.h * 100) + '%';
+          box.style.borderColor = safeColor(item.cover.color || this.plugin.settings.defaultColor);
+        }
+        imgWrap.removeClass('sNr-quiz-crop-loading');
+      } catch (error) {
+        console.error('Slide and Reveal: could not prepare quiz image', error);
+        parent.createDiv({ text: 'Could not prepare this image safely. Try reopening the quiz.' });
       }
+    };
+    img.onerror = () => {
+      imgWrap.remove();
+      parent.createDiv({ text: 'Could not load image: ' + item.imagePath });
     };
     img.onload = onReady;
     img.src = this.app.vault.getResourcePath(tFile);
-    if (img.complete && img.naturalWidth > 0) onReady();
+    if (img.complete && img.naturalWidth > 0) void onReady();
   }
 
   /** Opaque concealer overlay matching a cover's shape (rect or polygon).
