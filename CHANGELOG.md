@@ -1,5 +1,12 @@
 # Release notes
 
+## 0.5.20 — 2026-10-08
+
+- Small rectangle covers are no longer silently thrown away. A rectangle used to be dropped if it was less than 1% of the image wide or tall, which on big or tall images could mean 20+ pixels on screen, so covers for a single line of label text never appeared. Now anything at least 3 pixels on screen is kept. A second click on the same spot still cancels.
+- The resize handle can shrink a cover down to the same 3-pixel minimum.
+
+AI assistance: Claude (model: Claude Opus 5.5).
+
 ## 0.5.19 — 2026-10-02
 
 UI glitch fixes from a sweep of every screen in edit and study mode, light and dark themes, narrow panes and phone layout.

@@ -1,6 +1,6 @@
 import { ItemView, Notice, Platform, Scope, TAbstractFile, TFile, TFolder, WorkspaceLeaf, ViewStateResult, setIcon } from 'obsidian';
 import type SlideAndRevealPlugin from './main';
-import { VIEW_TYPE, IMG_RE, ANNOT_FILE, FolderData, Rect, Point, TargetRegion } from './types';
+import { VIEW_TYPE, IMG_RE, ANNOT_FILE, MIN_SHAPE_PX, MIN_SHAPE_FRAC, FolderData, Rect, Point, TargetRegion } from './types';
 import { clamp01, clampPoints, joinPath, relTo, safeColor, uid } from './util';
 import { emptyAnnotations, type AnnotationRevision } from './annotations';
 import { RenameModal } from './modals';
@@ -1359,9 +1359,11 @@ export class SlideAndRevealView extends ItemView {
     canvas.removeEventListener('mousemove', onMove);
     ghost.remove();
     this.rectDraft = null;
-    if (w < 0.01 || h < 0.01) {
-      // Second click landed on top of the first — treat as a cancel rather
-      // than committing a degenerate 0-size cover.
+    // Second click landed on top of the first — treat as a cancel rather
+    // than committing a degenerate 0-size cover. Measured in screen pixels:
+    // the old "1% of the image" floor silently dropped small covers on big
+    // or tall images, where 1% can be dozens of pixels on screen.
+    if (w * cb.width < MIN_SHAPE_PX || h * cb.height < MIN_SHAPE_PX) {
       return;
     }
     this.snapshot();
@@ -1470,8 +1472,8 @@ export class SlideAndRevealView extends ItemView {
       if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
       if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
     }
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     const localPts: Point[] = points.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
 
     if (destination.kind === 'target') {
@@ -1740,8 +1742,8 @@ export class SlideAndRevealView extends ItemView {
     }
     minX = clamp01(minX); minY = clamp01(minY);
     maxX = clamp01(maxX); maxY = clamp01(maxY);
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     tr.x = minX; tr.y = minY; tr.w = w; tr.h = h;
     tr.points = canvasPts.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
   }
@@ -1954,8 +1956,8 @@ export class SlideAndRevealView extends ItemView {
         if (!this.canEdit()) return;
         const dx = (ev.clientX - startX) / cb.width;
         const dy = (ev.clientY - startY) / cb.height;
-        rect.w = clamp01(Math.max(0.01, Math.min(1 - rect.x, ow + dx)));
-        rect.h = clamp01(Math.max(0.01, Math.min(1 - rect.y, oh + dy)));
+        rect.w = clamp01(Math.max(MIN_SHAPE_PX / cb.width, Math.min(1 - rect.x, ow + dx)));
+        rect.h = clamp01(Math.max(MIN_SHAPE_PX / cb.height, Math.min(1 - rect.y, oh + dy)));
         el.style.width = (rect.w * 100) + '%';
         el.style.height = (rect.h * 100) + '%';
         // Pair tag is centered on the shape, so resizing also moves it.
@@ -2250,8 +2252,8 @@ export class SlideAndRevealView extends ItemView {
     }
     minX = clamp01(minX); minY = clamp01(minY);
     maxX = clamp01(maxX); maxY = clamp01(maxY);
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     rect.x = minX; rect.y = minY; rect.w = w; rect.h = h;
     rect.points = canvasPts.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
   }

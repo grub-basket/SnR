@@ -30,6 +30,8 @@ var VIEW_TYPE = "slide-and-reveal-view";
 var IMG_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 var ANNOT_FILE = ".slide-and-reveal.json";
 var LEGACY_ANNOT_FILE = ".image-annotator.json";
+var MIN_SHAPE_PX = 3;
+var MIN_SHAPE_FRAC = 1e-4;
 var DEFAULT_SETTINGS = {
   defaultSeconds: 3,
   defaultColor: "#3b82f6",
@@ -1835,7 +1837,7 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     canvas.removeEventListener("mousemove", onMove);
     ghost.remove();
     this.rectDraft = null;
-    if (w < 0.01 || h < 0.01) {
+    if (w * cb.width < MIN_SHAPE_PX || h * cb.height < MIN_SHAPE_PX) {
       return;
     }
     this.snapshot();
@@ -1942,8 +1944,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
       if (p.x > maxX) maxX = p.x;
       if (p.y > maxY) maxY = p.y;
     }
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     const localPts = points2.map((p) => ({ x: (p.x - minX) / w, y: (p.y - minY) / h }));
     if (destination.kind === "target") {
       const { list: list2 } = this.rectsFor(file);
@@ -2195,8 +2197,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     minY = clamp01(minY);
     maxX = clamp01(maxX);
     maxY = clamp01(maxY);
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     tr.x = minX;
     tr.y = minY;
     tr.w = w;
@@ -2377,8 +2379,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
         if (!this.canEdit()) return;
         const dx = (ev.clientX - startX) / cb.width;
         const dy = (ev.clientY - startY) / cb.height;
-        rect.w = clamp01(Math.max(0.01, Math.min(1 - rect.x, ow + dx)));
-        rect.h = clamp01(Math.max(0.01, Math.min(1 - rect.y, oh + dy)));
+        rect.w = clamp01(Math.max(MIN_SHAPE_PX / cb.width, Math.min(1 - rect.x, ow + dx)));
+        rect.h = clamp01(Math.max(MIN_SHAPE_PX / cb.height, Math.min(1 - rect.y, oh + dy)));
         el.style.width = rect.w * 100 + "%";
         el.style.height = rect.h * 100 + "%";
         this.updatePairOverlayPosition(canvas, rect);
@@ -2624,8 +2626,8 @@ var SlideAndRevealView = class _SlideAndRevealView extends import_obsidian4.Item
     minY = clamp01(minY);
     maxX = clamp01(maxX);
     maxY = clamp01(maxY);
-    const w = Math.max(0.01, maxX - minX);
-    const h = Math.max(0.01, maxY - minY);
+    const w = Math.max(MIN_SHAPE_FRAC, maxX - minX);
+    const h = Math.max(MIN_SHAPE_FRAC, maxY - minY);
     rect.x = minX;
     rect.y = minY;
     rect.w = w;

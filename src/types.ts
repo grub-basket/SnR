@@ -4,6 +4,14 @@ export const ANNOT_FILE = '.slide-and-reveal.json';
 /** Older name kept around so existing folders auto-migrate on load. */
 export const LEGACY_ANNOT_FILE = '.image-annotator.json';
 
+/** Smallest cover side, in on-screen pixels, that drawing and resizing
+ *  accept. Measured on screen (not as a share of the image) so the floor
+ *  is the same on a huge or very tall image as on a small one. */
+export const MIN_SHAPE_PX = 3;
+/** Absolute floor for a stored shape side, as a fraction of the image.
+ *  Only guards the polygon point math against dividing by zero. */
+export const MIN_SHAPE_FRAC = 0.0001;
+
 export type ShapeKind = 'rect' | 'polygon';
 
 export interface Point { x: number; y: number; }
